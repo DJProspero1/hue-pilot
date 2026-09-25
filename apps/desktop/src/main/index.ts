@@ -22,12 +22,15 @@ import {
 } from '@hue/core/node';
 import { ConfigStore } from './config.ts';
 import { HueService } from './hue-service.ts';
-import { GeminiChat, listGeminiModels } from './gemini.ts';
+import { AssistantChat, listModels } from './llm/chat.ts';
+import { providerMeta, type ProviderId, type ProviderSettings } from '../shared/providers.ts';
 import { LocalApi } from './http-api.ts';
 import { buildSnippets, detectInstalled, findNode, installAgent, mcpScriptPath } from './agents.ts';
 import type { AgentInfo, ChatMessage, CreateSceneInput, HueApi, PairTarget, ScheduleSpec, ScheduleView, Settings } from '../shared/ipc-types.ts';
 
 app.setName('Hue Pilot');
+// Isolated config dirs (tests, screenshots) also get their own Electron data + single-instance lock.
+if (process.env.HUE_PILOT_CONFIG_DIR) app.setPath('userData', path.join(process.env.HUE_PILOT_CONFIG_DIR, 'electron'));
 if (process.platform === 'win32') app.setAppUserModelId('pt.prospero.huepilot');
 
 const singleInstance = app.requestSingleInstanceLock();
@@ -59,9 +62,9 @@ const runTool = async (name: string, args: Record<string, unknown>) => {
   return result;
 };
 
-const chat = new GeminiChat({
-  getApiKey: () => config.settings.geminiApiKey,
-  getModel: () => config.settings.geminiModel,
+const chat = new AssistantChat({
+  getProvider: () => config.settings.assistantProvider,
+  getProviderConfig: (p: ProviderId) => config.settings.providers[p] ?? { apiKey: '', model: providerMeta(p).defaultModel },
   getSystemPrompt: async () => {
     const home = await hue.getHome();
     const lang = config.settings.language;
@@ -471,7 +474,7 @@ const handlers: Handlers = {
   chat: (text: string) => chatSend(text),
   resetChat: async () => chat.reset(),
   getChatHistory: async () => chat.transcript,
-  listGeminiModels: () => listGeminiModels(config.settings.geminiApiKey),
+  listModels: (provider: ProviderId) => listModels(provider, config.settings.providers[provider]?.apiKey ?? ''),
   runTool: (name, args) => runTool(name, args),
   listTools: async () => TOOL_DEFINITIONS,
 
@@ -489,6 +492,11 @@ const handlers: Handlers = {
     }
     if (patch.httpApiEnabled !== undefined || (patch.httpApiPort !== undefined && patch.httpApiPort !== before.httpApiPort)) await restartApi();
     if (patch.favouriteGroupIds) updateTray();
+    broadcast('hue:settings', next);
+    return next;
+  },
+  updateProvider: async (provider: ProviderId, patch: Partial<ProviderSettings>) => {
+    const next = config.updateProvider(provider, patch);
     broadcast('hue:settings', next);
     return next;
   },

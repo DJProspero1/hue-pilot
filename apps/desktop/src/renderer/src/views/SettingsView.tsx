@@ -1,8 +1,96 @@
-import { Cpu, Eye, EyeOff, FolderOpen, KeyRound, Moon, RefreshCw, Sun, SunMoon, Unplug } from 'lucide-react';
+import { Check, Cpu, Eye, EyeOff, FolderOpen, KeyRound, Moon, RefreshCw, Sun, SunMoon, Unplug } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button, Card, cx, Field, Input, Modal, SectionTitle, Select, Toggle } from '../components/ui';
 import { useApp } from '../store';
 import type { AppInfo } from '../../../shared/ipc-types.ts';
+import { PROVIDERS, type ModelInfo, type ProviderId } from '../../../shared/providers.ts';
+
+function ProviderCard({ id }: { id: ProviderId }) {
+  const meta = PROVIDERS.find((p) => p.id === id)!;
+  const settings = useApp((s) => s.settings);
+  const updateSettings = useApp((s) => s.updateSettings);
+  const toast = useApp((s) => s.toast);
+  const cfg = settings.providers[id] ?? { apiKey: '', model: meta.defaultModel };
+  const active = settings.assistantProvider === id;
+  const [key, setKey] = useState(cfg.apiKey);
+  const [show, setShow] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => setKey(cfg.apiKey), [cfg.apiKey]);
+
+  const saveKey = async () => {
+    await window.hue.updateProvider(id, { apiKey: key.trim() });
+    toast(key.trim() ? `${meta.label} key saved` : `${meta.label} key removed`, 'success');
+  };
+  const setModel = (model: string) => window.hue.updateProvider(id, { model }).catch((e) => toast(e.message, 'error'));
+  const fetchModels = async () => {
+    setLoading(true);
+    try {
+      if (key.trim() !== cfg.apiKey) await window.hue.updateProvider(id, { apiKey: key.trim() });
+      const list = await window.hue.listModels(id);
+      setModels(list);
+      toast(`${list.length} ${meta.label} models available`, 'success');
+    } catch (err) {
+      toast((err as Error).message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card className={cx('mb-3', active && 'border-accent/60 shadow-[0_0_0_2px_rgba(255,138,61,0.25)]')}>
+      <div className="flex items-center gap-3 mb-3">
+        <button
+          onClick={() => updateSettings({ assistantProvider: id })}
+          className={cx('h-6 w-6 rounded-full border-2 flex items-center justify-center transition-colors', active ? 'border-accent bg-accent text-white' : 'border-[var(--border-strong)] hover:border-accent')}
+          title={active ? 'Provider in use' : `Use ${meta.label}`}
+        >
+          {active && <Check size={13} />}
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold flex items-center gap-2">
+            {meta.label}
+            {active && <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">in use</span>}
+            {cfg.apiKey && !active && <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">key set</span>}
+          </div>
+          <div className="text-xs text-muted">{meta.modelHint}</div>
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => window.hue.openExternal(meta.keyUrl)}>Get a key</Button>
+      </div>
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1.3fr 1fr' }}>
+        <div>
+          <div className="text-xs text-muted mb-1">API key</div>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <KeyRound size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <Input type={show ? 'text' : 'password'} value={key} onChange={(e) => setKey(e.target.value)} placeholder={meta.keyPlaceholder} className="pl-8 pr-9" onKeyDown={(e) => e.key === 'Enter' && saveKey()} />
+              <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-[var(--fg)]" onClick={() => setShow((v) => !v)} title={show ? 'Hide' : 'Show'}>
+                {show ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+            <Button variant={key.trim() !== cfg.apiKey ? 'primary' : 'subtle'} onClick={saveKey} disabled={key.trim() === cfg.apiKey}>Save</Button>
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-muted mb-1">Model</div>
+          <div className="flex gap-2">
+            {models.length ? (
+              <Select value={cfg.model} onChange={(e) => setModel(e.target.value)}>
+                {!models.some((m) => m.name === cfg.model) && <option value={cfg.model}>{cfg.model}</option>}
+                {models.map((m) => (
+                  <option key={m.name} value={m.name}>{m.displayName && m.displayName !== m.name ? `${m.name} — ${m.displayName}` : m.name}</option>
+                ))}
+              </Select>
+            ) : (
+              <Input value={cfg.model} onChange={(e) => setModel(e.target.value)} placeholder={meta.defaultModel} />
+            )}
+            <Button variant="outline" loading={loading} onClick={fetchModels} disabled={!key.trim()} title="List the models available to this key">Fetch</Button>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export default function SettingsView() {
   const settings = useApp((s) => s.settings);
@@ -13,10 +101,6 @@ export default function SettingsView() {
   const toast = useApp((s) => s.toast);
   const refreshConnection = useApp((s) => s.refreshConnection);
   const navigate = useApp((s) => s.navigate);
-  const [key, setKey] = useState(settings.geminiApiKey);
-  const [showKey, setShowKey] = useState(false);
-  const [models, setModels] = useState<{ name: string; displayName: string }[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
   const [forget, setForget] = useState(false);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [port, setPort] = useState(String(settings.httpApiPort));
@@ -24,28 +108,9 @@ export default function SettingsView() {
   useEffect(() => {
     window.hue.getAppInfo().then(setInfo);
   }, []);
-  useEffect(() => setKey(settings.geminiApiKey), [settings.geminiApiKey]);
-
-  const saveKey = async () => {
-    await updateSettings({ geminiApiKey: key.trim() });
-    toast(key.trim() ? 'Gemini API key saved' : 'Gemini API key removed', 'success');
-  };
-
-  const fetchModels = async () => {
-    setLoadingModels(true);
-    try {
-      if (key.trim() !== settings.geminiApiKey) await updateSettings({ geminiApiKey: key.trim() });
-      const list = await window.hue.listGeminiModels();
-      setModels(list);
-      toast(`${list.length} models available`, 'success');
-    } catch (err) {
-      toast((err as Error).message, 'error');
-    } finally {
-      setLoadingModels(false);
-    }
-  };
 
   const theme = settings.theme;
+  const activeMeta = PROVIDERS.find((p) => p.id === settings.assistantProvider) ?? PROVIDERS[0];
 
   return (
     <div className="fade-in max-w-3xl">
@@ -81,36 +146,21 @@ export default function SettingsView() {
         )}
       </Card>
 
-      <SectionTitle>Gemini assistant</SectionTitle>
-      <Card className="mb-6">
-        <Field label="Gemini API key" hint="Create a free key at aistudio.google.com/apikey. Stored locally in this app's config file.">
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <KeyRound size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-              <Input type={showKey ? 'text' : 'password'} value={key} onChange={(e) => setKey(e.target.value)} placeholder="AIza…" className="pl-9 pr-10" onKeyDown={(e) => e.key === 'Enter' && saveKey()} />
-              <button className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-[var(--fg)]" onClick={() => setShowKey((v) => !v)} title={showKey ? 'Hide' : 'Show'}>
-                {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-            </div>
-            <Button variant="primary" onClick={saveKey} disabled={key.trim() === settings.geminiApiKey}>Save</Button>
-            <Button variant="outline" onClick={() => window.hue.openExternal('https://aistudio.google.com/apikey')}>Get a key</Button>
-          </div>
+      <SectionTitle>Assistant</SectionTitle>
+      <Card className="mb-3">
+        <Field label="Provider in use" hint="Each provider keeps its own key and model. Keys are stored only in this app's config file and are sent only to that provider." inline>
+          <Select value={settings.assistantProvider} onChange={(e) => updateSettings({ assistantProvider: e.target.value as ProviderId })} className="w-56">
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}{settings.providers[p.id]?.apiKey ? '' : ' (no key)'}</option>
+            ))}
+          </Select>
         </Field>
-        <Field label="Model" hint="gemini-2.5-flash is fast and cheap; fetch the list to pick another.">
-          <div className="flex gap-2">
-            {models.length ? (
-              <Select value={settings.geminiModel} onChange={(e) => updateSettings({ geminiModel: e.target.value })}>
-                {!models.some((m) => m.name === settings.geminiModel) && <option value={settings.geminiModel}>{settings.geminiModel}</option>}
-                {models.map((m) => (
-                  <option key={m.name} value={m.name}>{m.name} — {m.displayName}</option>
-                ))}
-              </Select>
-            ) : (
-              <Input value={settings.geminiModel} onChange={(e) => updateSettings({ geminiModel: e.target.value })} placeholder="gemini-2.5-flash" />
-            )}
-            <Button variant="outline" loading={loadingModels} onClick={fetchModels} disabled={!key.trim()}>Fetch models</Button>
-          </div>
-        </Field>
+        <div className="text-xs text-muted">Currently answering with <span className="text-[var(--fg)] font-medium">{activeMeta.label} · {settings.providers[settings.assistantProvider]?.model}</span>.</div>
+      </Card>
+      {PROVIDERS.map((p) => (
+        <ProviderCard key={p.id} id={p.id} />
+      ))}
+      <Card className="mb-6 mt-3">
         <Field label="Reply language" inline>
           <Select value={settings.language} onChange={(e) => updateSettings({ language: e.target.value as typeof settings.language })} className="w-44">
             <option value="auto">Match my message</option>

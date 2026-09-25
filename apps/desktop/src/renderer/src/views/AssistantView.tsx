@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, cx, IconButton, Spinner } from '../components/ui';
 import { useApp } from '../store';
 import type { ChatMessage } from '../../../shared/ipc-types.ts';
+import { PROVIDERS, providerMeta, type ProviderId } from '../../../shared/providers.ts';
 
 const SUGGESTIONS = [
   'Turn on the office lights',
@@ -40,7 +41,10 @@ export default function AssistantView() {
   const [listening, setListening] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const hasKey = !!settings.geminiApiKey;
+  const provider = settings.assistantProvider;
+  const meta = providerMeta(provider);
+  const cfg = settings.providers[provider] ?? { apiKey: '', model: meta.defaultModel };
+  const hasKey = !!cfg.apiKey;
   const speechSupported = typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window);
 
   useEffect(() => {
@@ -53,6 +57,11 @@ export default function AssistantView() {
     setText('');
     await send(v);
     inputRef.current?.focus();
+  };
+
+  const switchProvider = async (id: ProviderId) => {
+    if (id === provider) return;
+    await updateSettings({ assistantProvider: id });
   };
 
   const startListening = () => {
@@ -77,12 +86,24 @@ export default function AssistantView() {
 
   return (
     <div className="flex h-full flex-col fade-in" style={{ minHeight: 'calc(100vh - 92px)' }}>
-      <div className="flex items-end justify-between mb-3">
-        <div>
+      <div className="flex items-end justify-between mb-3 gap-3">
+        <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight">Assistant</h1>
-          <p className="text-sm text-muted mt-0.5">Powered by Gemini{settings.geminiModel ? ` · ${settings.geminiModel}` : ''} · controls your lights through tools</p>
+          <p className="text-sm text-muted mt-0.5 truncate">
+            {meta.label} · {cfg.model} · controls your lights through tools
+          </p>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
+          <select
+            value={provider}
+            onChange={(e) => switchProvider(e.target.value as ProviderId)}
+            className="h-9 rounded-xl surface px-3 text-sm outline-none focus:border-accent/60"
+            title="Switch assistant provider (starts a new conversation)"
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}{settings.providers[p.id]?.apiKey ? '' : ' (no key)'}</option>
+            ))}
+          </select>
           <IconButton title={settings.speakReplies ? 'Stop speaking replies' : 'Speak replies aloud'} onClick={() => updateSettings({ speakReplies: !settings.speakReplies })} className={settings.speakReplies ? 'text-accent' : ''}>
             {settings.speakReplies ? <Volume2 size={17} /> : <VolumeX size={17} />}
           </IconButton>
@@ -96,10 +117,13 @@ export default function AssistantView() {
         <div className="surface rounded-2xl p-4 mb-3 flex items-start gap-3 border-accent/40">
           <KeyRound size={18} className="text-accent mt-0.5" />
           <div className="text-sm flex-1">
-            <div className="font-medium">Add a Gemini API key to start talking to your lights</div>
-            <div className="text-muted mt-0.5">Get a free key at aistudio.google.com/apikey, then paste it in Settings. The key only leaves this computer to talk to Google's API.</div>
+            <div className="font-medium">Add a {meta.label} API key to start talking to your lights</div>
+            <div className="text-muted mt-0.5">Get a key at {meta.keyUrl.replace(/^https?:\/\//, '')}, then paste it in Settings. Keys only leave this computer to talk to {meta.label}. You can also pick another provider above.</div>
           </div>
-          <Button size="sm" variant="primary" onClick={() => navigate({ view: 'settings' })}>Open Settings</Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => window.hue.openExternal(meta.keyUrl)}>Get a key</Button>
+            <Button size="sm" variant="primary" onClick={() => navigate({ view: 'settings' })}>Open Settings</Button>
+          </div>
         </div>
       )}
       {status.state !== 'connected' && (
@@ -123,6 +147,7 @@ export default function AssistantView() {
         )}
         {chat.map((m) => {
           if (m.role === 'tool') return <div key={m.id} className="flex justify-start pl-10"><ToolCard m={m} /></div>;
+          if (m.role === 'system') return <div key={m.id} className="text-center text-[11px] text-muted py-1">{m.text}</div>;
           if (m.role === 'error')
             return (
               <div key={m.id} className="flex items-start gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm max-w-[80%]">
@@ -138,7 +163,7 @@ export default function AssistantView() {
           );
         })}
         {busy && (
-          <div className="flex gap-2 items-center pl-10 text-xs text-muted"><Spinner size={14} /> Thinking…</div>
+          <div className="flex gap-2 items-center pl-10 text-xs text-muted"><Spinner size={14} /> {meta.label} is thinking…</div>
         )}
         <div ref={bottomRef} />
       </div>
@@ -155,7 +180,7 @@ export default function AssistantView() {
             }
           }}
           rows={1}
-          placeholder={hasKey ? 'e.g. "Please turn the lights in my office on"' : 'Add a Gemini API key in Settings first'}
+          placeholder={hasKey ? 'e.g. "Please turn the lights in my office on"' : `Add a ${meta.label} API key in Settings first`}
           disabled={!hasKey}
           className="flex-1 resize-none bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted max-h-32"
           style={{ minHeight: 42 }}

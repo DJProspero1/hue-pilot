@@ -10,10 +10,13 @@ import type {
   ToolDefinition,
   ToolResult,
 } from '@hue/core';
+import { DEFAULT_PROVIDER_SETTINGS, type ModelInfo, type ProviderId, type ProviderSettings } from './providers.ts';
 
 export interface Settings {
-  geminiApiKey: string;
-  geminiModel: string;
+  /** Which assistant backend the chat uses. */
+  assistantProvider: ProviderId;
+  /** API key and model per provider. */
+  providers: Record<ProviderId, ProviderSettings>;
   theme: 'system' | 'dark' | 'light';
   transitionMs: number;
   minimizeToTray: boolean;
@@ -27,8 +30,8 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  geminiApiKey: '',
-  geminiModel: 'gemini-2.5-flash',
+  assistantProvider: 'gemini',
+  providers: DEFAULT_PROVIDER_SETTINGS,
   theme: 'system',
   transitionMs: 400,
   minimizeToTray: true,
@@ -165,13 +168,14 @@ export interface HueApi {
   chat(text: string): Promise<ChatMessage[]>;
   resetChat(): Promise<void>;
   getChatHistory(): Promise<ChatMessage[]>;
-  listGeminiModels(): Promise<{ name: string; displayName: string }[]>;
+  listModels(provider: ProviderId): Promise<ModelInfo[]>;
   runTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
   listTools(): Promise<ToolDefinition[]>;
 
   // settings & agents
   getSettings(): Promise<Settings>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
+  updateProvider(provider: ProviderId, patch: Partial<ProviderSettings>): Promise<Settings>;
   getAgentInfo(): Promise<AgentInfo>;
   installAgent(target: AgentTarget): Promise<{ ok: boolean; message: string }>;
   getAppInfo(): Promise<AppInfo>;

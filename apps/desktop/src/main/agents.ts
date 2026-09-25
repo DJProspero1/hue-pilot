@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -170,12 +170,20 @@ export async function installAgent(target: AgentTarget, configPath: string): Pro
         const args = ['mcp', 'add', '--scope', 'user'];
         if (spec.env) for (const [k, v] of Object.entries(spec.env)) args.push('-e', `${k}=${v}`);
         args.push('hue', '--', spec.command, ...spec.args);
+        // `claude` is a .cmd shim on Windows, so it must go through the shell; quote every argument
+        // ourselves because execFileSync with shell:true does not (paths contain spaces).
+        const useShell = process.platform === 'win32';
+        const quote = (s: string) => (useShell && /[\s"&|<>^()]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
+        const run = (list: string[]) =>
+          useShell
+            ? execSync([quote(claude), ...list.map(quote)].join(' '), { encoding: 'utf8', windowsHide: true, timeout: 20000 })
+            : execFileSync(claude, list, { encoding: 'utf8', windowsHide: true, timeout: 20000 });
         try {
-          execFileSync(claude, ['mcp', 'remove', '--scope', 'user', 'hue'], { encoding: 'utf8', windowsHide: true, timeout: 15000, shell: process.platform === 'win32' });
+          run(['mcp', 'remove', '--scope', 'user', 'hue']);
         } catch {
           /* not installed yet */
         }
-        const out = execFileSync(claude, args, { encoding: 'utf8', windowsHide: true, timeout: 15000, shell: process.platform === 'win32' });
+        const out = run(args);
         return { ok: true, message: out.trim() || 'Added the "hue" MCP server to Claude Code (user scope).' };
       }
     }
