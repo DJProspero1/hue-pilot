@@ -1,6 +1,5 @@
 package pt.prospero.huepilot.assistant
 
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -11,46 +10,49 @@ sealed class AssistantEvent {
     data class Failure(val message: String) : AssistantEvent()
 }
 
-/** Signature of the model call: (systemInstruction, contents, functionDeclarations) -> reply. */
-typealias GenerateFn = suspend (systemInstruction: String, contents: JsonArray, declarations: JsonArray) -> GeminiReply
-
 /**
- * The Gemini function-calling loop, independent of Android so it can be unit-tested:
- * send the conversation -> if the model returns functionCall parts, execute them locally and send
- * back functionResponse parts (role user) -> repeat until a text answer or [maxIterations].
+ * The provider-neutral function-calling loop: send the history -> if the model asked for tools, run
+ * them locally against the bridge, append the results and repeat -> until a text answer or
+ * [maxIterations] tool rounds. The history is provider-specific (assistant turns carry raw payloads),
+ * so it is reset whenever the provider or model changes.
  */
 class AssistantEngine(
     private val tools: HueTools,
-    private val generate: GenerateFn,
     private val maxIterations: Int = 8,
 ) {
-    /** Conversation history in Gemini `contents` format. */
-    val contents = ArrayList<JsonObject>()
+    val history = ArrayList<Turn>()
 
-    fun reset() = contents.clear()
+    fun reset() = history.clear()
 
-    suspend fun ask(userText: String, systemInstruction: String, onEvent: (AssistantEvent) -> Unit) {
-        contents += GeminiClient.userText(userText)
+    suspend fun ask(
+        userText: String,
+        systemInstruction: String,
+        adapter: LlmAdapter,
+        config: ProviderConfig,
+        onEvent: (AssistantEvent) -> Unit,
+    ) {
+        history += Turn.User(userText)
         try {
-            var iterations = 0
-            while (iterations < maxIterations) {
-                iterations++
-                val reply = generate(systemInstruction, JsonArray(contents.toList()), tools.declarations)
-                contents += reply.rawContent
-                val calls = reply.parts.filterIsInstance<GeminiPart.FunctionCall>()
-                if (calls.isEmpty()) {
-                    val text = reply.parts.filterIsInstance<GeminiPart.Text>().joinToString("\n") { it.text }.trim()
-                    onEvent(AssistantEvent.Answer(text.ifEmpty { "Done." }))
+            repeat(maxIterations) {
+                val reply = adapter.generate(config, systemInstruction, history.toList(), tools.specs)
+                history += reply.turn
+                if (reply.stop == StopReason.REFUSAL) {
+                    onEvent(AssistantEvent.Answer("The model declined this request." + (reply.note?.takeIf { it.isNotBlank() }?.let { " $it" } ?: "")))
                     return
                 }
-                val responses = ArrayList<Pair<String, JsonObject>>()
-                for (c in calls) {
+                if (reply.turn.toolCalls.isEmpty()) {
+                    var text = reply.turn.text?.trim().orEmpty().ifEmpty { "Done." }
+                    if (reply.stop == StopReason.MAX_TOKENS) text += "\n\n(" + (reply.note ?: "The reply was cut short by the model's output limit.") + ")"
+                    onEvent(AssistantEvent.Answer(text))
+                    return
+                }
+                val results = reply.turn.toolCalls.map { c ->
                     val result = tools.execute(c.name, c.args)
                     val ok = result["ok"]?.jsonPrimitive?.content == "true"
                     onEvent(AssistantEvent.ToolCall(c.name, tools.summarize(c.name, c.args, result), ok, c.args, result))
-                    responses += c.name to result
+                    ToolResult(c.id, c.name, result, isError = HueTools.isBridgeFailure(result))
                 }
-                contents += GeminiClient.functionResponses(responses)
+                history += Turn.ToolResults(results)
             }
             onEvent(AssistantEvent.Answer("I ran out of steps; the actions above were applied."))
         } catch (e: Exception) {

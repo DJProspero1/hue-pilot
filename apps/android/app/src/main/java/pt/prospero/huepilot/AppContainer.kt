@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import pt.prospero.huepilot.assistant.GeminiClient
 import pt.prospero.huepilot.assistant.HueTools
+import pt.prospero.huepilot.assistant.ProviderRegistry
 import pt.prospero.huepilot.data.hue.HueRepository
 import pt.prospero.huepilot.data.settings.AppSettings
 import pt.prospero.huepilot.data.settings.SettingsRepository
@@ -21,7 +21,7 @@ class AppContainer(context: Context) {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val settings = SettingsRepository(appContext)
     val repository = HueRepository(appScope)
-    val gemini = GeminiClient()
+    val providers = ProviderRegistry()
     val tools = HueTools(repository)
 
     val settingsState: StateFlow<AppSettings> = settings.settings.stateIn(appScope, SharingStarted.Eagerly, AppSettings())

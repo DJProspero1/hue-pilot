@@ -7,15 +7,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import pt.prospero.huepilot.AppContainer
-import pt.prospero.huepilot.assistant.GeminiModel
+import pt.prospero.huepilot.assistant.AssistantProvider
+import pt.prospero.huepilot.assistant.ModelInfo
 import pt.prospero.huepilot.data.settings.ThemeMode
 
-data class SettingsUiState(
-    val models: List<GeminiModel> = emptyList(),
-    val fetchingModels: Boolean = false,
-    val modelsError: String? = null,
-    val saved: Boolean = false,
+data class ProviderUiState(
+    val models: List<ModelInfo> = emptyList(),
+    val fetching: Boolean = false,
+    val error: String? = null,
 )
+
+data class SettingsUiState(
+    val providers: Map<AssistantProvider, ProviderUiState> = emptyMap(),
+) {
+    fun provider(p: AssistantProvider): ProviderUiState = providers[p] ?: ProviderUiState()
+}
 
 class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     val settings = container.settingsState
@@ -25,18 +31,22 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     private val _ui = MutableStateFlow(SettingsUiState())
     val ui: StateFlow<SettingsUiState> = _ui
 
-    fun saveGemini(apiKey: String, model: String) = viewModelScope.launch {
-        container.settings.setGemini(apiKey, model.ifBlank { "gemini-2.5-flash" })
-        _ui.update { it.copy(saved = true) }
+    private fun updateProvider(p: AssistantProvider, f: (ProviderUiState) -> ProviderUiState) =
+        _ui.update { it.copy(providers = it.providers + (p to f(it.provider(p)))) }
+
+    fun setAssistantProvider(p: AssistantProvider) = viewModelScope.launch { container.settings.setAssistantProvider(p) }
+
+    fun saveProvider(p: AssistantProvider, apiKey: String, model: String) = viewModelScope.launch {
+        container.settings.setProviderConfig(p, apiKey, model.ifBlank { p.defaultModel })
     }
 
-    fun fetchModels(apiKey: String) = viewModelScope.launch {
-        _ui.update { it.copy(fetchingModels = true, modelsError = null) }
+    fun fetchModels(p: AssistantProvider, apiKey: String) = viewModelScope.launch {
+        updateProvider(p) { it.copy(fetching = true, error = null) }
         try {
-            val models = container.gemini.listModels(apiKey)
-            _ui.update { it.copy(models = models, fetchingModels = false, modelsError = if (models.isEmpty()) "No models returned" else null) }
+            val models = container.providers.adapter(p).listModels(apiKey)
+            updateProvider(p) { it.copy(models = models, fetching = false, error = if (models.isEmpty()) "No tool-capable models returned" else null) }
         } catch (e: Exception) {
-            _ui.update { it.copy(fetchingModels = false, modelsError = e.message ?: "Could not fetch models") }
+            updateProvider(p) { it.copy(fetching = false, error = e.message ?: "Could not fetch models") }
         }
     }
 

@@ -36,10 +36,13 @@ import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -55,14 +58,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import pt.prospero.huepilot.assistant.AssistantProvider
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,6 +79,9 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val provider = settings.assistantProvider
+    val config = settings.activeConfig
+    var providerMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.items.size, state.busy) {
         if (state.items.isNotEmpty()) listState.animateScrollToItem(state.items.size)
@@ -121,8 +131,39 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Assistant") },
+                title = {
+                    Column {
+                        Text("Assistant")
+                        Text(
+                            "${provider.label} · ${config.model}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
                 actions = {
+                    Box {
+                        IconButton(onClick = { providerMenu = true }) { Icon(Icons.Outlined.SwapHoriz, contentDescription = "Switch provider") }
+                        DropdownMenu(expanded = providerMenu, onDismissRequest = { providerMenu = false }) {
+                            AssistantProvider.entries.forEach { p ->
+                                val cfg = settings.provider(p)
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(p.label, fontWeight = if (p == provider) FontWeight.Bold else FontWeight.Normal)
+                                            Text(
+                                                if (cfg.hasKey) cfg.model else "${cfg.model} · no key",
+                                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    },
+                                    leadingIcon = { if (p == provider) Icon(Icons.Outlined.Check, contentDescription = null) },
+                                    onClick = { providerMenu = false; if (p != provider) vm.switchProvider(p) },
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = { vm.setSpeakReplies(!settings.speakReplies) }) {
                         Icon(if (settings.speakReplies) Icons.Outlined.VolumeUp else Icons.Outlined.VolumeOff, contentDescription = "Speak replies")
                     }
@@ -133,8 +174,8 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
-            if (settings.geminiApiKey.isBlank()) {
-                SetupBanner(onOpenSettings)
+            if (!config.hasKey) {
+                SetupBanner(provider, onOpenSettings)
             }
             LazyColumn(
                 state = listState,
@@ -148,7 +189,7 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
                             Text("Ask me to control your lights", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Model: ${settings.geminiModel}. I can switch rooms and lights, set colours and scenes, start effects, read sensors and create schedules.",
+                                "Using ${provider.label} (${config.model}). I can switch rooms and lights, set colours and scenes, start effects, read sensors and create schedules.",
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -202,13 +243,13 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun SetupBanner(onOpenSettings: () -> Unit) {
+private fun SetupBanner(provider: AssistantProvider, onOpenSettings: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().padding(16.dp).background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(16.dp)).padding(16.dp),
     ) {
-        Text("Set up the assistant", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
+        Text("Set up ${provider.label}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
         Text(
-            "The assistant uses Google Gemini. Add a free API key from Google AI Studio in Settings to start chatting.",
+            "The assistant is set to ${provider.label} but no API key is stored. Add one in Settings (or switch provider with the arrows icon) to start chatting.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer,
         )
         TextButton(onClick = onOpenSettings, modifier = Modifier.align(Alignment.End)) { Text("Open Settings") }

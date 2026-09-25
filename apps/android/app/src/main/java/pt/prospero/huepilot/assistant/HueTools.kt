@@ -33,8 +33,8 @@ class HueTools(private val repo: HueRepository) {
 
     val effectNames = listOf("candle", "fire", "prism", "sparkle", "opal", "glisten", "underwater", "cosmos", "sunbeam", "enchant", "no_effect")
 
-    /** Gemini `functionDeclarations`. */
-    val declarations: JsonArray = buildJsonArray {
+    /** Provider-neutral tool specs (name, description, JSON-schema parameters). */
+    val specs: List<ToolSpec> = buildList {
         add(decl("get_home_overview", "Returns every room and zone with their lights, scenes and current state (on/off, brightness, colour). Call this first when you need to know what exists or the current state.", emptyMap(), emptyList()))
         add(decl("set_room", "Control all lights of a room or zone. Setting brightness or colour implies turning it on unless on=false.",
             mapOf(
@@ -85,15 +85,20 @@ class HueTools(private val repo: HueRepository) {
         add(decl("delete_schedule", "Delete a schedule by id.", mapOf("id" to str("Schedule id from list_schedules.")), listOf("id")))
     }
 
-    private fun decl(name: String, description: String, props: Map<String, JsonObject>, required: List<String>): JsonObject = buildJsonObject {
-        put("name", name)
-        put("description", description)
-        putJsonObject("parameters") {
+    /** Gemini-style `functionDeclarations` view of [specs] (also the neutral JSON shape). */
+    val declarations: JsonArray = JsonArray(specs.map { s ->
+        buildJsonObject { put("name", s.name); put("description", s.description); put("parameters", s.parameters) }
+    })
+
+    private fun decl(name: String, description: String, props: Map<String, JsonObject>, required: List<String>): ToolSpec = ToolSpec(
+        name = name,
+        description = description,
+        parameters = buildJsonObject {
             put("type", "object")
             putJsonObject("properties") { props.forEach { (k, v) -> put(k, v) } }
             if (required.isNotEmpty()) putJsonArray("required") { required.forEach { add(JsonPrimitive(it)) } }
-        }
-    }
+        },
+    )
 
     private fun str(d: String) = buildJsonObject { put("type", "string"); put("description", d) }
     private fun bool(d: String) = buildJsonObject { put("type", "boolean"); put("description", d) }
@@ -487,5 +492,11 @@ class HueTools(private val repo: HueRepository) {
 
     companion object {
         fun JsonElement?.asStringOrNull(): String? = (this as? JsonPrimitive)?.content
+
+        /** True for bridge/exception failures (not for semantic answers such as ambiguous / not_found). */
+        fun isBridgeFailure(result: JsonObject): Boolean {
+            if (result["ok"]?.jsonPrimitive?.content == "true") return false
+            return result["error"]?.jsonPrimitive?.content in setOf("bridge_error", "not_connected", "error")
+        }
     }
 }

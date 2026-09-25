@@ -5,12 +5,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import pt.prospero.huepilot.AppContainer
 import pt.prospero.huepilot.assistant.AssistantEngine
 import pt.prospero.huepilot.assistant.AssistantEvent
+import pt.prospero.huepilot.assistant.AssistantProvider
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -36,13 +41,7 @@ class AssistantViewModel(private val container: AppContainer) : ViewModel() {
     val state: StateFlow<AssistantState> = _state
     val settings = container.settingsState
 
-    private val engine = AssistantEngine(
-        tools = container.tools,
-        generate = { system, contents, declarations ->
-            val s = settings.value
-            container.gemini.generateContent(s.geminiApiKey, s.geminiModel, system, contents, declarations)
-        },
-    )
+    private val engine = AssistantEngine(container.tools)
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -61,23 +60,39 @@ class AssistantViewModel(private val container: AppContainer) : ViewModel() {
             ttsReady = status == TextToSpeech.SUCCESS
             if (ttsReady) tts?.language = Locale.getDefault()
         }
+        // Histories are provider-specific: switching provider or model starts a fresh conversation.
+        viewModelScope.launch {
+            settings.filter { it.loaded }
+                .map { it.assistantProvider to it.activeConfig.model }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { clear() }
+        }
     }
 
     fun setInput(text: String) = _state.update { it.copy(input = text) }
     fun setListening(v: Boolean) = _state.update { it.copy(listening = v) }
     fun setSpeakReplies(on: Boolean) { viewModelScope.launch { container.settings.setSpeakReplies(on) }; if (!on) tts?.stop() }
-    fun clear() { engine.reset(); _state.update { AssistantState() } }
+    fun clear() { engine.reset(); _state.update { AssistantState(input = it.input) } }
+
+    /** Quick provider switch from the chat header; the conversation is reset by the settings observer. */
+    fun switchProvider(provider: AssistantProvider) {
+        viewModelScope.launch { container.settings.setAssistantProvider(provider) }
+    }
 
     fun send(textIn: String? = null) {
         val text = (textIn ?: _state.value.input).trim()
         if (text.isEmpty() || _state.value.busy) return
         _state.update { it.copy(items = it.items + ChatItem.User(text), input = "", busy = true) }
         viewModelScope.launch {
-            if (settings.value.geminiApiKey.isBlank()) {
-                _state.update { it.copy(items = it.items + ChatItem.Error("No Gemini API key configured. Open Settings and add your key."), busy = false) }
+            val s = settings.value
+            val provider = s.assistantProvider
+            val config = s.provider(provider)
+            if (!config.hasKey) {
+                _state.update { it.copy(items = it.items + ChatItem.Error("No ${provider.label} API key configured. Open Settings and add your key."), busy = false) }
                 return@launch
             }
-            engine.ask(text, systemInstruction()) { event ->
+            engine.ask(text, systemInstruction(), container.providers.adapter(provider), config) { event ->
                 when (event) {
                     is AssistantEvent.ToolCall -> _state.update { it.copy(items = it.items + ChatItem.Tool(event.name, event.label, event.ok, event.args)) }
                     is AssistantEvent.Answer -> { _state.update { it.copy(items = it.items + ChatItem.Assistant(event.text)) }; speak(event.text) }
