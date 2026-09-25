@@ -1,0 +1,209 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --color-accent: #ff8a3d;
+  --color-accent-2: #ff5e7e;
+  --color-accent-3: #a855f7;
+  --radius-xl2: 1.25rem;
+}
+
+:root {
+  color-scheme: light;
+  --bg: #f4f6fb;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #eef1f7;
+  --fg: #0f172a;
+  --fg-muted: #64748b;
+  --border: rgba(15, 23, 42, 0.09);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.25);
+  --sidebar: #ffffff;
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: #0b0f17;
+  --bg-elev: #121826;
+  --bg-elev-2: #1a2233;
+  --fg: #e5e7eb;
+  --fg-muted: #94a3b8;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --shadow: 0 14px 40px -16px rgba(0, 0, 0, 0.7);
+  --sidebar: #0e131d;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(255, 138, 61, 0.35);
+}
+
+.drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.surface {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+}
+.surface-2 {
+  background: var(--bg-elev-2);
+}
+.text-muted {
+  color: var(--fg-muted);
+}
+.border-base {
+  border-color: var(--border);
+}
+.shadow-soft {
+  box-shadow: var(--shadow);
+}
+
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
+.scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.5);
+  background-clip: content-box;
+  border: 3px solid transparent;
+}
+
+/* Range slider */
+input[type='range'].slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+input[type='range'].slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+input[type='range'].slider::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--track, linear-gradient(90deg, rgba(128, 128, 128, 0.25), rgba(128, 128, 128, 0.25)));
+  border: 1px solid var(--border);
+}
+input[type='range'].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -7px;
+  border-radius: 999px;
+  background: #fff;
+  border: 2px solid rgba(15, 23, 42, 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: transform 0.12s ease;
+}
+input[type='range'].slider:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+input[type='range'].slider.thick::-webkit-slider-runnable-track {
+  height: 16px;
+}
+input[type='range'].slider.thick::-webkit-slider-thumb {
+  width: 26px;
+  height: 26px;
+  margin-top: -6px;
+}
+
+.fade-in {
+  animation: fadeIn 0.18s ease-out;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.slide-in-right {
+  animation: slideInRight 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes slideInRight {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.pulse-ring {
+  animation: pulseRing 1.8s ease-out infinite;
+}
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.glow-on {
+  box-shadow: 0 0 0 1px var(--border), 0 0 24px -6px var(--glow, rgba(255, 200, 120, 0.6));
+}
+
+.prose-chat p {
+  margin: 0 0 0.4em;
+}
+.prose-chat p:last-child {
+  margin-bottom: 0;
+}
+code,
+pre {
+  font-family: 'Cascadia Code', 'Consolas', ui-monospace, monospace;
+  font-size: 12px;
+}

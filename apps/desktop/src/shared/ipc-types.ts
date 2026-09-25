@@ -1,0 +1,188 @@
+import type {
+  BridgeConfigV1,
+  BridgeConnection,
+  DiscoveredBridge,
+  HomeModel,
+  LightState,
+  ResourceType,
+  SceneAction,
+  ScheduleV1,
+  ToolDefinition,
+  ToolResult,
+} from '@hue/core';
+
+export interface Settings {
+  geminiApiKey: string;
+  geminiModel: string;
+  theme: 'system' | 'dark' | 'light';
+  transitionMs: number;
+  minimizeToTray: boolean;
+  launchAtLogin: boolean;
+  httpApiEnabled: boolean;
+  httpApiPort: number;
+  httpApiToken: string;
+  favouriteGroupIds: string[];
+  speakReplies: boolean;
+  language: 'auto' | 'en' | 'pt';
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  geminiApiKey: '',
+  geminiModel: 'gemini-2.5-flash',
+  theme: 'system',
+  transitionMs: 400,
+  minimizeToTray: true,
+  launchAtLogin: false,
+  httpApiEnabled: true,
+  httpApiPort: 8787,
+  httpApiToken: '',
+  favouriteGroupIds: [],
+  speakReplies: false,
+  language: 'auto',
+};
+
+export interface ConnectionStatus {
+  state: 'disconnected' | 'connecting' | 'connected' | 'error';
+  stream: 'open' | 'connecting' | 'closed';
+  error?: string;
+  bridgeName?: string;
+  host?: string;
+  lastUpdate?: number;
+}
+
+export interface PairTarget {
+  host: string;
+  port?: number;
+  protocol?: 'https' | 'http';
+}
+
+export type PairResponse = { ok: true; bridge: BridgeConnection } | { ok: false; linkButton: boolean; error: string };
+
+export interface ChatToolCall {
+  name: string;
+  args: Record<string, unknown>;
+  result: ToolResult;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool' | 'error' | 'system';
+  text: string;
+  tool?: ChatToolCall;
+  at: number;
+}
+
+export interface ScheduleView {
+  id: string;
+  name: string;
+  when: string;
+  localtime: string;
+  status: 'enabled' | 'disabled';
+  target?: { kind: 'group' | 'light' | 'unknown'; id?: string; name: string };
+  action: { on?: boolean; brightness?: number; sceneId?: string; sceneName?: string; summary: string };
+  createdBy: 'hue-pilot' | 'other';
+  raw: ScheduleV1;
+}
+
+export interface ScheduleSpec {
+  name: string;
+  time: string;
+  days?: string[];
+  onceDate?: string;
+  target: { kind: 'group' | 'light'; id: string };
+  on?: boolean;
+  brightness?: number;
+  sceneId?: string;
+}
+
+export type AgentTarget = 'claude-desktop' | 'gemini-cli' | 'claude-code' | 'cursor' | 'codex' | 'vscode';
+
+export interface AgentInfo {
+  mcpPath: string;
+  nodeCommand: string | null;
+  electronPath: string;
+  configPath: string;
+  bridgeConfigured: boolean;
+  httpApi: { enabled: boolean; port: number; token: string; url: string };
+  snippets: Record<AgentTarget, { title: string; file: string; content: string; language: string }>;
+  installed: Record<AgentTarget, boolean>;
+}
+
+export interface AppInfo {
+  version: string;
+  platform: string;
+  configPath: string;
+  isPackaged: boolean;
+  electron: string;
+}
+
+export interface CreateSceneInput {
+  name: string;
+  groupId: string;
+  groupType: 'room' | 'zone';
+  actions: SceneAction[];
+  fromCurrentState?: boolean;
+}
+
+/** API exposed to the renderer through the preload script. */
+export interface HueApi {
+  // bridge & pairing
+  discover(): Promise<DiscoveredBridge[]>;
+  probe(target: PairTarget): Promise<BridgeConfigV1>;
+  pair(target: PairTarget): Promise<PairResponse>;
+  forgetBridge(): Promise<void>;
+  getConnection(): Promise<BridgeConnection | null>;
+  getStatus(): Promise<ConnectionStatus>;
+  reconnect(): Promise<void>;
+
+  // state
+  getHome(): Promise<HomeModel>;
+  refresh(): Promise<HomeModel>;
+
+  // control
+  setLight(id: string, state: LightState): Promise<void>;
+  setGroup(groupId: string, state: LightState): Promise<void>;
+  recallScene(id: string, action?: 'active' | 'dynamic_palette' | 'static'): Promise<void>;
+  identify(lightId: string): Promise<void>;
+  identifyGroup(groupId: string): Promise<void>;
+  rename(type: ResourceType, id: string, name: string): Promise<void>;
+  createScene(input: CreateSceneInput): Promise<string>;
+  updateScene(id: string, patch: { name?: string; speed?: number; autoDynamic?: boolean; actions?: SceneAction[] }): Promise<void>;
+  deleteScene(id: string): Promise<void>;
+  setSensorEnabled(type: ResourceType, id: string, enabled: boolean): Promise<void>;
+  searchLights(): Promise<void>;
+  updateGroupChildren(type: 'room' | 'zone', id: string, children: { rid: string; rtype: string }[]): Promise<void>;
+  createGroup(type: 'room' | 'zone', name: string, archetype: string, children: { rid: string; rtype: string }[]): Promise<string>;
+  deleteGroup(type: 'room' | 'zone', id: string): Promise<void>;
+
+  // schedules
+  listSchedules(): Promise<ScheduleView[]>;
+  createSchedule(spec: ScheduleSpec): Promise<string>;
+  updateSchedule(id: string, patch: { status?: 'enabled' | 'disabled'; name?: string }): Promise<void>;
+  deleteSchedule(id: string): Promise<void>;
+
+  // assistant
+  chat(text: string): Promise<ChatMessage[]>;
+  resetChat(): Promise<void>;
+  getChatHistory(): Promise<ChatMessage[]>;
+  listGeminiModels(): Promise<{ name: string; displayName: string }[]>;
+  runTool(name: string, args: Record<string, unknown>): Promise<ToolResult>;
+  listTools(): Promise<ToolDefinition[]>;
+
+  // settings & agents
+  getSettings(): Promise<Settings>;
+  updateSettings(patch: Partial<Settings>): Promise<Settings>;
+  getAgentInfo(): Promise<AgentInfo>;
+  installAgent(target: AgentTarget): Promise<{ ok: boolean; message: string }>;
+  getAppInfo(): Promise<AppInfo>;
+  openExternal(url: string): Promise<void>;
+  openPath(path: string): Promise<void>;
+  copyText(text: string): Promise<void>;
+
+  // events
+  onHome(cb: (home: HomeModel) => void): () => void;
+  onStatus(cb: (status: ConnectionStatus) => void): () => void;
+  onChatEvent(cb: (message: ChatMessage) => void): () => void;
+  onNavigate(cb: (route: string) => void): () => void;
+  onSettings(cb: (settings: Settings) => void): () => void;
+}

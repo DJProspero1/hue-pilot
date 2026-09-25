@@ -1,0 +1,36 @@
+appId: pt.prospero.huepilot
+electronVersion: 44.4.5
+productName: Hue Pilot
+copyright: Copyright © 2026 Luís Próspero
+directories:
+  output: ../../release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - "!node_modules/**"
+extraResources:
+  - from: ../../packages/hue-mcp/dist/hue-mcp.mjs
+    to: hue-mcp.mjs
+  - from: resources
+    to: app
+asar: true
+compression: normal
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.png
+  artifactName: HuePilot-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Hue Pilot
+  artifactName: HuePilot-Setup-${version}.${ext}
+portable:
+  artifactName: HuePilot-Portable-${version}.${ext}

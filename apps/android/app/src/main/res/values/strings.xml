@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hue Pilot</string>
+    <string name="widget_label">Hue Pilot rooms</string>
+    <string name="widget_description">Quick on/off toggles for your favourite rooms.</string>
+</resources>

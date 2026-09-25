@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/renderer/src/*"] }
+  },
+  "include": ["src/renderer/src", "src/preload/index.d.ts"]
+}

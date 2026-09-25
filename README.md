@@ -1,0 +1,66 @@
+# Hue Pilot
+
+A Philips Hue suite built for AI control:
+
+| Part | What it is | Where |
+| --- | --- | --- |
+| **Hue Pilot desktop** | Windows app (Electron) that controls the bridge over the local network, with a built-in Gemini assistant, a system-tray menu, a local HTTP API and one-click setup of AI agents | `apps/desktop` → `release/HuePilot-Setup-1.0.0.exe`, `release/HuePilot-Portable-1.0.0.exe` |
+| **Hue Pilot Android** | Native Android app (Kotlin, Jetpack Compose) with the same features and a voice-enabled Gemini assistant | `apps/android` → `release/HuePilot-android.apk` |
+| **MCP server** | Exposes the Hue tools to Claude Desktop, Claude Code, Gemini CLI, Codex, Cursor, VS Code and any MCP client | `packages/hue-mcp` → `dist/hue-mcp.mjs` (bundled into the desktop installer) |
+| **@hue/core** | Shared TypeScript library: CLIP v2 client, event stream, colour maths, view model, fuzzy name matching, schedules, agent tools | `packages/hue-core` |
+| **Mock bridge** | A fake Hue bridge for development and tests | `packages/hue-mock-bridge` |
+
+## Quick start (desktop)
+
+1. Install `release/HuePilot-Setup-1.0.0.exe` (or run the portable exe).
+2. The app finds the bridge on your network. Click **Connect** and press the round button on the bridge once.
+3. Go to **Settings → Gemini assistant** and paste a free key from <https://aistudio.google.com/apikey>.
+4. Open **Assistant** and type or say: *"Please turn the lights in my office on."*
+
+Everything the assistant can do is also available to external agents. Open **AI agents** and click **Install** for Claude Desktop, Claude Code, Gemini CLI, Codex, Cursor or VS Code. The MCP server reads the pairing from the app's config file (`%APPDATA%\hue-pilot\config.json`), so it works even when the app is closed.
+
+## Features (desktop)
+
+- Rooms, zones and the whole home: on/off, brightness, quick colours, live colour dots.
+- Room view: group brightness, quick palette, scene carousel (static and dynamic), lights list.
+- Light panel: colour wheel (gamut-aware), colour-temperature slider in Kelvin, effects (candle, fire, prism, sparkle, opal, glisten, …), identify, rename, device details.
+- Scenes: activate, dynamic mode, save the current state of a room as a new scene, rename, delete.
+- Automations: schedules stored on the bridge (daily, weekdays, custom days, or once) that run when the app is closed.
+- Accessories: motion sensors (motion, temperature, lux, battery, enable/disable), dimmer switches, bridge info.
+- Live updates through the bridge event stream; optimistic UI for sliders.
+- System tray with quick toggles for favourite rooms; optional start with Windows; dark/light theme.
+- Assistant: Gemini function calling with 11 tools, tool calls shown inline, optional spoken replies and voice input.
+- Local HTTP API (`http://127.0.0.1:8787`, bearer token in the AI agents page) for scripts and other agents.
+
+## Agent tools
+
+`get_home_overview`, `set_room`, `set_light`, `set_all_lights`, `activate_scene`, `set_effect`, `identify_light`, `get_sensor_readings`, `list_schedules`, `create_schedule`, `delete_schedule`.
+
+Names are matched fuzzily ("the office lights" → room *Office*). Colours accept names, hex and white presets (candlelight … daylight) or Kelvin. Ambiguous names return the candidates so the agent can ask.
+
+Standalone MCP usage without the desktop app:
+
+```
+HUE_BRIDGE_HOST=192.168.1.74 HUE_APP_KEY=<key> node packages/hue-mcp/dist/hue-mcp.mjs
+```
+
+## Development
+
+```
+npm install                     # workspace install
+npm test                        # core + Gemini loop tests (use the mock bridge)
+npm run mock                    # mock bridge on http://localhost:8080
+npm run dev                     # desktop app with hot reload
+npm run build -w packages/hue-mcp
+npm run dist                    # Windows installer + portable exe in release/
+```
+
+Useful environment variables for the desktop app: `HUE_PILOT_CONFIG_DIR` (alternate config folder), `HUE_PILOT_SCREENSHOT_DIR` + `HUE_PILOT_SCREENSHOT_ROUTES` (headless screenshots for verification), `HUE_PILOT_GEMINI_BASE` (fake Gemini endpoint for tests).
+
+The Android app has its own README in `apps/android`.
+
+## Notes
+
+- The bridge uses a private certificate authority; the apps talk to it over HTTPS without verifying the certificate (standard practice for local Hue clients).
+- Schedules use the bridge's v1 API (`/api/<key>/schedules`), which current bridges still support. Sunrise/sunset automations are not included.
+- Entertainment areas (light sync streaming) are out of scope.

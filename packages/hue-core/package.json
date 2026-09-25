@@ -1,0 +1,14 @@
+{
+  "name": "@hue/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
+  },
+  "types": "./src/index.ts",
+  "devDependencies": {
+    "@types/node": "^26.6.2"
+  }
+}
