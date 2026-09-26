@@ -122,7 +122,10 @@ class WidgetLogicTest {
     @Test
     fun sensorDevices_camerasFirst_bridgeExcluded() {
         fun acc(name: String, product: String?, motionId: String?, bridge: Boolean = false) = AccessoryUi(
-            name, null, name, product, null, null, null, bridge, null, null, motionId, null, null, null, null, null, null, null, null, null, emptyList(), null,
+            deviceId = name, idV1 = null, name = name, productName = product, modelId = null, archetype = null, softwareVersion = null, isBridge = bridge,
+            batteryLevel = null, batteryState = null, motionId = motionId, motion = null, motionEnabled = null, motionUpdated = null,
+            temperatureId = null, temperatureC = null, temperatureUpdated = null, lightLevelId = null, lightLevelRaw = null, lightLevelUpdated = null,
+            buttons = emptyList(), connectivity = null,
         )
         val list = listOf(acc("Zeta sensor", "Hue motion sensor", "m1"), acc("Bridge", "Hue Bridge", null, bridge = true), acc("Front camera", "Hue Secure camera", "m2"), acc("Dimmer", "Hue dimmer switch", null))
         assertThat(WidgetLogic.sensorDevices(list).map { it.name }).containsExactly("Front camera", "Zeta sensor").inOrder()

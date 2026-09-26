@@ -63,6 +63,7 @@ import pt.prospero.huepilot.ui.room.RoomScreen
 import pt.prospero.huepilot.ui.scenes.ScenesScreen
 import pt.prospero.huepilot.ui.settings.SettingsScreen
 import pt.prospero.huepilot.ui.settings.SettingsViewModel
+import pt.prospero.huepilot.ui.widgets.WidgetsScreen
 
 object Routes {
     const val HOME = "home"
@@ -71,6 +72,7 @@ object Routes {
     const val ACCESSORIES = "accessories"
     const val ASSISTANT = "assistant"
     const val SETTINGS = "settings"
+    const val WIDGETS = "widgets"
     const val ROOM = "room/{id}"
     const val LIGHT = "light/{id}"
     fun room(id: String) = "room/$id"
@@ -134,7 +136,7 @@ private fun MainScaffold(factory: HueViewModelFactory, launch: StateFlow<LaunchR
         val r = request ?: return@LaunchedEffect
         val route = Routes.normalize(r.route)
         val isTab = tabs.any { it.route == route }
-        val known = isTab || route == Routes.SETTINGS || route.startsWith("room/") || route.startsWith("light/")
+        val known = isTab || route == Routes.SETTINGS || route == Routes.WIDGETS || route.startsWith("room/") || route.startsWith("light/")
         if (known) {
             pendingListen = r.listen && route == Routes.ASSISTANT
             if (isTab) {
@@ -201,8 +203,9 @@ private fun MainScaffold(factory: HueViewModelFactory, launch: StateFlow<LaunchR
             }
             composable(Routes.SETTINGS) {
                 val vm: SettingsViewModel = viewModel(factory = factory)
-                SettingsScreen(vm, onBack = { nav.popBackStack() })
+                SettingsScreen(vm, onBack = { nav.popBackStack() }, onOpenWidgets = { nav.navigate(Routes.WIDGETS) })
             }
+            composable(Routes.WIDGETS) { WidgetsScreen(onBack = { nav.popBackStack() }) }
             composable(Routes.ROOM, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 RoomScreen(hueVm, id, onBack = { nav.popBackStack() }, onOpenLight = { nav.navigate(Routes.light(it)) })

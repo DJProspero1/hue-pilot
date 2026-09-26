@@ -86,7 +86,10 @@ brightness pills, scene tiles drawn from each scene's palette, Manrope typograph
 desktop app (rooms, zones, lights, scenes, effects, sensors, the five-provider assistant with voice input), a
 **Sensors** tab that shows the Hue Secure cameras (motion, last motion, ambient light, battery, motion-detection
 switch, inline floodlight control, and a clear note that video is only available in the Philips Hue app), and a
-suite of home-screen widgets. Details in `apps/android/README.md`.
+suite of eight home-screen widgets (Rooms grid, Room control, Scenes, All lights, Light control, Ask Hue Pilot,
+Sensors & security, Colour strip) that work while the app is closed, plus launcher shortcuts (voice assistant,
+scenes, cameras). *Settings → Widgets* shows previews and adds them to the home screen. Details in
+`apps/android/README.md`.
 
 ## Notes
 

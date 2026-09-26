@@ -186,8 +186,8 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit, onOpenWidgets: (()
                     Text("${(local / 1000f * 10).roundToInt() / 10f} s", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
                 }
                 Slider(
-                    value = local, onValueChange = { local = it }, onValueChangeFinished = { vm.setTransitionMs(local.roundToInt()) },
-                    valueRange = 0f..5000f, steps = 49,
+                    value = local, onValueChange = { local = (it / 100f).roundToInt() * 100f }, onValueChangeFinished = { vm.setTransitionMs(local.roundToInt()) },
+                    valueRange = 0f..5000f,
                     colors = SliderDefaults.colors(inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest),
                 )
                 Text("Applied to every on/off, brightness and colour change sent from the app.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
