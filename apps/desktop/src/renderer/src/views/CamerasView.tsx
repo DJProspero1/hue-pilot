@@ -219,8 +219,10 @@ function VideoNote() {
     <Card className="flex items-start gap-3 border-amber-500/30 bg-amber-500/5">
       <Info size={18} className="text-amber-500 shrink-0 mt-0.5" />
       <div className="text-sm">
-        <div className="font-medium">Live video isn't available through the bridge API.</div>
-        <div className="text-muted mt-0.5">Hue Secure streams and clips are end-to-end encrypted and only viewable in the Philips Hue app. Hue Pilot shows what the bridge exposes: motion, ambient light, battery, connectivity and firmware.</div>
+        <div className="font-medium">Live video never reaches the bridge, so it can't be shown here.</div>
+        <div className="text-muted mt-0.5">
+          Hue Secure cameras stream only to Signify's cloud, end-to-end encrypted. The ways to watch: the Philips Hue app on your phone, or a Nest Hub / Google Home app and an Echo Show / Fire TV after linking Hue to Google Home or Alexa (cloud, beta). The cameras expose no local stream at all — a full port scan of both on this network found nothing open. Hue Pilot shows what the bridge does expose: motion, ambient light, battery, connectivity and firmware.
+        </div>
       </div>
     </Card>
   );

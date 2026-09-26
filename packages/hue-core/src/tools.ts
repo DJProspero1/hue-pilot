@@ -698,7 +698,7 @@ export function buildSystemPrompt(home: HomeModel, extra?: string): string {
     'Reply in the language the user writes in. Brightness is 1-100%. "Dim" means around 30%, "bright" means 100%.',
     'Never invent rooms, lights or scenes; use get_home_overview when unsure.',
     cameras
-      ? 'Hue Secure cameras: use get_sensor_readings for motion/battery/light level and set_camera_motion_detection to switch motion detection. The bridge exposes no video; tell the user to open the Philips Hue app for live view or clips.'
+      ? 'Hue Secure cameras: use get_sensor_readings for motion/battery/light level and set_camera_motion_detection to switch motion detection. The bridge exposes no video; live view is only in the Philips Hue app, or on a Nest Hub / Echo Show / Fire TV after linking Hue to Google Home or Alexa.'
       : '',
     '',
     'Home layout:',

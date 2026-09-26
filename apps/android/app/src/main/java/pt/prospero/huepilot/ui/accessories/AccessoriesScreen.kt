@@ -198,9 +198,9 @@ private fun CameraNote() {
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .padding(14.dp),
     ) {
-        Text("About live video", style = MaterialTheme.typography.titleSmall)
+        Text("Watching live video", style = MaterialTheme.typography.titleSmall)
         Text(
-            "The bridge shares each camera's motion, ambient light and battery, but not its video. Hue Secure streams are end-to-end encrypted and can only be watched in the Philips Hue app.",
+            "The bridge shares each camera's motion, ambient light and battery, but never its video: Hue Secure streams only leave Signify's cloud to the Philips Hue app, or to Google Home (Nest Hub) and Amazon Alexa (Echo Show, Fire TV) once you link Hue there. There is no local stream to show here.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         TextButton(
