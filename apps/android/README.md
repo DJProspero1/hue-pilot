@@ -1,11 +1,27 @@
 # Hue Pilot — Android
 
 Native Android client for Philips Hue (CLIP v2) with an AI assistant that can use Google Gemini, OpenAI,
-Anthropic, DeepSeek or OpenRouter. Kotlin, Jetpack Compose, Material 3 with dynamic colour (Material You),
-light/dark themes. `minSdk 26`, `targetSdk 36`.
+Anthropic, DeepSeek or OpenRouter. Kotlin, Jetpack Compose, Material 3, light/dark themes.
+`minSdk 26`, `targetSdk 36`.
 
 Package: `pt.prospero.huepilot`. Single activity + Compose Navigation, OkHttp (HTTP + SSE),
-kotlinx.serialization, DataStore preferences, ViewModels with StateFlow, coroutines.
+kotlinx.serialization, DataStore preferences, ViewModels with StateFlow, coroutines, Glance widgets.
+
+## Design
+
+The app has its own design language ("Hue Pilot", in `ui/theme/Theme.kt`) instead of stock Material:
+
+- A warm near-black dark theme and a warm off-white light theme with a single amber accent (`HuePalette`).
+  Material You wallpaper colours are opt-in (*Settings → Appearance → Wallpaper colours*).
+- **Ambient surfaces**: every room, light and camera card takes on the colour of what it represents
+  (`AmbientCard` / `ambientBrush`, animated). Off rooms stay neutral, a room lit in blue is tinted blue,
+  a camera that sees motion turns red.
+- **Colour-filled brightness pills** (`FillSlider`): the bar fills with the light's own colour; drag or tap,
+  the light follows the finger (throttled) and the final value is sent on release.
+- **Scene artwork** (`SceneArt`): each scene's palette rendered as a gradient tile with the name overlaid;
+  the active scene shows a check.
+- Manrope (variable font, bundled in `res/font`) for all text; 24 dp cards, pill tabs (`PillTabs`),
+  glowing icons (`GlowIcon`), status pills, big screen headers with a greeting on Home.
 
 ## Build
 
@@ -26,6 +42,7 @@ cd apps/android
 
 Notes for this machine: `gradle.properties` sets `android.overridePathCheck=true` (the checkout path contains
 non-ASCII characters) and `org.gradle.vfs.watch=false` (file-system watching missed changes under that path).
+A release-signed install must be uninstalled before a debug build can be installed over it.
 
 ## Install
 
@@ -40,30 +57,57 @@ the mock bridge: from an emulator use `10.0.2.2`, http, port `8080`). Press *Con
 bridge; the app polls `POST /api` every 1.5 s for 60 s. Credentials are stored in DataStore
 (*Settings → Forget bridge* removes them).
 
+### Debug launch extras and deep links
+
+Debug builds accept a pre-paired bridge so emulator runs skip onboarding:
+
+```bash
+adb shell am start -n pt.prospero.huepilot/.MainActivity \
+  --es hue_host 10.0.2.2 --ei hue_port 8080 --ez hue_https false --es hue_key mock --es hue_name "Mock"
+```
+
+Every build accepts `--es open <route>` (`home`, `lights`, `scenes`, `accessories`/`cameras`, `assistant`,
+`settings`, `room/<id>`, `light/<id>`) and `--ez listen true` (start voice input on the Assistant tab), and the same
+through `huepilot://<route>?listen=1` VIEW intents. Widgets and shortcuts use these.
+
 ## Features
 
-- **Home**: rooms and zones as cards (archetype icon, lights on/total, on/off switch, brightness slider, colour
-  dots of the lit lights) plus an *All lights* master switch (bridge_home grouped light). Live updates through the
-  bridge event stream (`/eventstream/clip/v2`, auto-reconnect with backoff); pull-to-refresh reloads everything.
-- **Room / zone**: big on/off + brightness, scene carousel with palette previews (active scene highlighted;
-  tap = activate, long-press = start dynamic / rename / delete), *Save current* creates a scene from the lights'
-  current state, quick colours for the whole group (grouped_light colour with per-light fallback), list of lights.
-- **Light detail**: on/off, brightness, tabs for **Colour** (hue/saturation wheel on a Canvas, output clipped to
-  the light's gamut), **White** (colour-temperature slider over a black-body gradient, Kelvin labels, presets) and
-  **Effects** (candle, fire, prism, … using `effects_v2` when available), quick palette, identify (breathe),
-  rename, and product/model/software/connectivity info. Only the controls the light supports are shown.
-- **Lights**: flat list grouped by room with search. **Scenes**: all scenes by room/zone with activate/dynamic.
-- **Accessories**: motion sensors (motion, temperature, lux, battery, enable toggle), switches/dimmers (last
-  button event + time) and the bridge itself.
-- **Assistant**: chat with the selected AI provider (see below), microphone input (`SpeechRecognizer`),
-  *Speak replies* (`TextToSpeech`), suggestion chips, inline tool-call cards, quick provider switcher in the header.
-- **Settings**: bridge info / forget, assistant provider selector + one card per provider (masked key, model,
-  *Fetch models*, *Get a key* link), theme, default transition time.
-- **Widget**: a Glance home-screen widget with on/off tiles for up to four favourite rooms (star a room in its
-  screen). Compiles and is registered; it was not visually verified on the emulator.
+- **Home**: greeting header with the live-connection dot, an *All lights* ambient card (colour dots of everything
+  that is on), a security strip (cameras + motion sensors: "All clear" or "Motion at …", tap → Sensors), rooms and
+  zones as ambient cards (archetype icon, on/off switch, "3 of 3 on · 67%", brightness pill while on). Live updates
+  through the bridge event stream (`/eventstream/clip/v2`, auto-reconnect with backoff); pull-to-refresh.
+- **Room / zone**: hero card with state, big brightness pill and an edge-to-edge quick-colour strip; scene tiles
+  (tap = activate, long-press = play dynamic / rename / delete); *Save current* creates a scene from the lights'
+  current state; the room's lights as ambient rows with their own brightness pills.
+- **Light detail**: hero card, pill tabs for **Colour** (hue/saturation wheel on a Canvas, clipped to the light's
+  gamut, plus swatches), **White** (colour-temperature pill with a ring handle over a black-body gradient, Kelvin
+  labels, presets) and **Effects** (tile grid with icons; candle, fire, prism, sparkle, … via `effects_v2` when
+  available, plus *Stop effect*), identify (blink), rename, and an *About this light* card.
+- **Lights**: search pill, lights grouped by room with sticky headers and per-room *All on/off*.
+- **Scenes**: scene artwork grid with room filter pills.
+- **Sensors**: **Cameras** (Hue Secure battery and floodlight cameras: motion state, last motion, ambient light,
+  battery, connectivity, a *Motion detection* switch that writes `camera_motion.enabled`, and the paired
+  floodlight's on/off + brightness inline; a note explains that live video is only available in the Philips Hue app
+  with an *Open the Hue app* button), motion sensors (motion, temperature, lux, battery, enable toggle), switches
+  and dimmers (last button event + time), and the bridge itself.
+- **Assistant**: chat with the selected AI provider (see below), microphone input (`SpeechRecognizer`), *Speak
+  replies* (`TextToSpeech`), suggestion cards, inline tool-call cards, provider switcher in the header.
+- **Settings**: bridge card with connection status and details, assistant providers as selectable rows that expand
+  into key/model editors (*Fetch* lists models), theme pill tabs, wallpaper colours, default transition time,
+  widgets gallery, about.
+- **Widgets**: see the Widgets section below.
 
 Colour maths (sRGB ↔ CIE xy with gamut clipping, mirek ↔ Kelvin, black-body swatches) lives in
 `domain/ColorMath.kt` and matches `packages/hue-core`.
+
+### Cameras and the data model
+
+`SnapshotBuilder` treats a device as a camera when its motion service is a `camera_motion` resource (or the product
+name contains "camera" / the model id starts with `CMB`/`CMW`). `AccessoryUi.kind` is then `"camera"` and
+`HomeSnapshot.cameras` / `motionSensors` / `switches` split the accessories. A floodlight camera (`CMW002`) is paired
+with its floodlight, which the bridge exposes as a separate light device (archetype `hue_floodlight_camera`): 1:1
+when there is one of each, otherwise by name similarity (`AccessoryUi.floodlightLightId`). The bridge exposes no
+video for Hue Secure cameras; the app says so instead of pretending.
 
 ## How the assistant works
 
@@ -79,9 +123,9 @@ Colour maths (sRGB ↔ CIE xy with gamut clipping, mirek ↔ Kelvin, black-body 
 
 Each provider has its own API key and model (stored in DataStore as `provider_<id>_key` / `provider_<id>_model`;
 the pre-multi-provider Gemini key/model are migrated into the gemini slot automatically). *Settings → Assistant →
-Provider in use* selects the back-end; the Assistant header shows `<Provider> · <model>` and its arrows icon
-switches provider on the spot. Changing the provider or model starts a new conversation, because the stored
-history contains provider-specific payloads.
+Provider in use* selects the back-end; the Assistant header shows `<Provider> · <model>` and tapping it switches
+provider on the spot. Changing the provider or model starts a new conversation, because the stored history
+contains provider-specific payloads.
 
 ### Engine
 
@@ -113,9 +157,10 @@ Adapters (`assistant/*Adapter.kt`) convert the neutral history into each API's r
 DeepSeek id; OpenRouter models whose `supported_parameters` include `tools` (capped at 300, sorted by id);
 Anthropic `/v1/models` following `has_more`/`last_id` pagination.
 
-The tools follow the suite-wide contract shared with the desktop app and the MCP server:
+The tools follow the suite-wide contract shared with the desktop app and the MCP server (12 tools):
 `get_home_overview`, `set_room`, `set_light`, `set_all_lights`, `activate_scene`, `set_effect`,
-`identify_light`, `get_sensor_readings`, `list_schedules`, `create_schedule`, `delete_schedule`.
+`identify_light`, `get_sensor_readings` (now also lists cameras with motion / detection state / lux / battery),
+`set_camera_motion_detection`, `list_schedules`, `create_schedule`, `delete_schedule`.
 Targets are matched by name (exact > starts-with > contains > word overlap, ids accepted); ambiguity returns
 `{ ok:false, error:"ambiguous", candidates:[…] }`, misses return `{ ok:false, error:"not_found", available:[…] }`.
 Colours accept names, hex or white presets; schedules are created bridge-side through the v1 API
@@ -124,10 +169,15 @@ Colours accept names, hex or white presets; schedules are created bridge-side th
 Without a key for the selected provider the chat shows a setup banner linking to Settings. Cloud LLM traffic uses
 a normal certificate-verifying client; only bridge traffic uses the trust-all client pinned to the bridge host name.
 
+## Widgets
+
+(See below — filled in with the widget suite.)
+
 ## Testing
 
 Unit tests cover the colour maths, name matching, schedule `localtime` builder, JSON deep-merge/snapshot building,
-the assistant loop (fake adapter), each provider adapter against a `MockWebServer` (request shape, echo-back of
+camera detection and floodlight pairing with real Hue Bridge Pro resource shapes (`CameraSnapshotTest`), the
+assistant loop (fake adapter), each provider adapter against a `MockWebServer` (request shape, echo-back of
 assistant payloads, tool-result messages, errors, model-list filtering/pagination) and the settings migration.
 `HueToolsMockBridgeTest` runs the whole tool contract against the mock bridge and is skipped automatically when it
 is not reachable:

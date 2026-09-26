@@ -5,7 +5,7 @@ A Philips Hue suite built for AI control:
 | Part | What it is | Where |
 | --- | --- | --- |
 | **Hue Pilot desktop** | Windows app (Electron) that controls the bridge over the local network, with a built-in AI assistant (Gemini, OpenAI, Anthropic, DeepSeek or OpenRouter), a system-tray menu, a local HTTP API and one-click setup of AI agents | `apps/desktop` → `release/HuePilot-Setup-1.2.0.exe`, `release/HuePilot-Portable-1.2.0.exe` |
-| **Hue Pilot Android** | Native Android app (Kotlin, Jetpack Compose) with the same features and a voice-enabled assistant with the same five providers | `apps/android` → `release/HuePilot-android.apk` |
+| **Hue Pilot Android** | Native Android app (Kotlin, Jetpack Compose) with a custom "ambient" design (cards take on the colour of your lights), Hue Secure camera status, a home-screen widget suite and a voice-enabled assistant with the same five providers | `apps/android` → `release/HuePilot-android.apk` |
 | **MCP server** | Exposes the Hue tools to Claude Desktop, Claude Code, Gemini CLI, Codex, Cursor, VS Code and any MCP client | `packages/hue-mcp` → `dist/hue-mcp.mjs` (bundled into the desktop installer) |
 | **@hue/core** | Shared TypeScript library: CLIP v2 client, event stream, colour maths, view model, fuzzy name matching, schedules, agent tools | `packages/hue-core` |
 | **Mock bridge** | A fake Hue bridge for development and tests | `packages/hue-mock-bridge` |
@@ -78,7 +78,15 @@ npm run dist                    # Windows installer + portable exe in release/
 
 Useful environment variables for the desktop app: `HUE_PILOT_CONFIG_DIR` (alternate config folder, also isolates Electron data so a second instance can run next to the installed app), `HUE_PILOT_SCREENSHOT_DIR` + `HUE_PILOT_SCREENSHOT_ROUTES` (headless screenshots for verification), `HUE_PILOT_{GEMINI,OPENAI,ANTHROPIC,DEEPSEEK,OPENROUTER}_BASE` (fake endpoints for tests).
 
-The Android app has its own README in `apps/android`.
+## Android
+
+`release/HuePilot-android.apk` (signed release). The phone app has its own design language: a warm near-black
+theme with an amber accent, "ambient" cards that take on the colour of the lights they represent, colour-filled
+brightness pills, scene tiles drawn from each scene's palette, Manrope typography. It has the same features as the
+desktop app (rooms, zones, lights, scenes, effects, sensors, the five-provider assistant with voice input), a
+**Sensors** tab that shows the Hue Secure cameras (motion, last motion, ambient light, battery, motion-detection
+switch, inline floodlight control, and a clear note that video is only available in the Philips Hue app), and a
+suite of home-screen widgets. Details in `apps/android/README.md`.
 
 ## Notes
 
