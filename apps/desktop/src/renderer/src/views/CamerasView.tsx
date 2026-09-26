@@ -1,10 +1,10 @@
 import type { CameraView, LightView } from '@hue/core';
-import { Battery, BatteryLow, BatteryWarning, Cctv, ChevronRight, Info, Radar, Sun, Wifi, WifiOff } from 'lucide-react';
+import { Battery, BatteryLow, BatteryWarning, Cctv, ChevronRight, Info, Loader2, Radar, RefreshCw, Smartphone, Square, Sun, Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Card, cx, EmptyState, Slider, Toggle, useThrottle } from '../components/ui';
+import { Button, Card, cx, EmptyState, Input, Slider, Toggle, useThrottle } from '../components/ui';
 import { lightIcon } from '../lib/icons';
 import { useApp } from '../store';
-import type { MotionEvent } from '../../../shared/ipc-types.ts';
+import type { MirrorDevice, MirrorStatus, MotionEvent } from '../../../shared/ipc-types.ts';
 
 function ago(iso?: string | null): string {
   if (!iso) return '';
@@ -219,10 +219,134 @@ function VideoNote() {
     <Card className="flex items-start gap-3 border-amber-500/30 bg-amber-500/5">
       <Info size={18} className="text-amber-500 shrink-0 mt-0.5" />
       <div className="text-sm">
-        <div className="font-medium">Live video never reaches the bridge, so it can't be shown here.</div>
+        <div className="font-medium">Live video never reaches the bridge, so it can't be decoded here.</div>
         <div className="text-muted mt-0.5">
-          Hue Secure cameras stream only to Signify's cloud, end-to-end encrypted. The ways to watch: the Philips Hue app on your phone, or a Nest Hub / Google Home app and an Echo Show / Fire TV after linking Hue to Google Home or Alexa (cloud, beta). The cameras expose no local stream at all — a full port scan of both on this network found nothing open. Hue Pilot shows what the bridge does expose: motion, ambient light, battery, connectivity and firmware.
+          Hue Secure cameras stream only to Signify's cloud, end-to-end encrypted, and expose no local stream (a full port scan of both cameras on this network found nothing open). The video plays in the Philips Hue app, on a Nest Hub (Google Home) and on an Echo Show / Fire TV (Alexa). Hue Pilot shows what the bridge does expose: motion, ambient light, battery, connectivity and firmware — and can put the Hue app's live view on this PC through your phone, below.
         </div>
+      </div>
+    </Card>
+  );
+}
+
+function deviceLabel(d: MirrorDevice): string {
+  const name = d.model ?? d.serial;
+  const via = d.transport === 'wifi' ? 'Wi‑Fi' : d.transport === 'emulator' ? 'emulator' : 'USB';
+  const state = d.state === 'device' ? 'ready' : d.state;
+  return `${name} · ${via} · ${state}`;
+}
+
+/** "Watch live on this PC": mirrors the phone (scrcpy) and opens the Philips Hue app in a window here. */
+function PhoneMirrorCard() {
+  const [status, setStatus] = useState<MirrorStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [address, setAddress] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    window.hue.getMirrorStatus().then((s) => alive && setStatus(s));
+    const off = window.hue.onMirrorStatus((s) => alive && setStatus(s));
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status?.installed) window.hue.mirrorRefreshDevices().then(setStatus).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.installed]);
+
+  const run = async (fn: () => Promise<MirrorStatus>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await fn());
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ready = status?.devices.filter((d) => d.state === 'device') ?? [];
+  const phone = ready.find((d) => d.transport !== 'emulator') ?? ready[0];
+  const shownError = error ?? status?.error ?? null;
+
+  return (
+    <Card className="mt-4">
+      <div className="flex items-start gap-3">
+        <div className="h-10 w-10 shrink-0 rounded-xl surface-2 flex items-center justify-center">
+          <Smartphone size={20} className="text-accent" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">Watch live on this PC</div>
+          <div className="text-sm text-muted mt-0.5">
+            Hue Pilot mirrors your Android phone in a window and opens the Philips Hue app on it, so the cameras' live view (and clips) show up here. Uses scrcpy {status?.version ?? ''} (open source, downloaded on first use, 11 MB).
+          </div>
+        </div>
+      </div>
+
+      <ol className="mt-3 text-sm text-muted list-decimal pl-5 space-y-1">
+        <li>Install the Philips Hue app on the phone and sign in with your Hue account.</li>
+        <li>On the phone: Settings → About phone → tap <span className="font-medium text-[var(--fg)]">Build number</span> 7 times, then Settings → System → Developer options → <span className="font-medium text-[var(--fg)]">USB debugging</span>.</li>
+        <li>Plug the phone into this PC with a USB cable and tap <span className="font-medium text-[var(--fg)]">Allow</span> on the phone. (Or use <em>Wireless debugging</em> and enter its address below.)</li>
+      </ol>
+
+      {status?.installing && (
+        <div className="mt-3 text-sm">
+          <div className="flex items-center gap-2">
+            <Loader2 size={14} className="spin" />
+            Downloading scrcpy… {status.progress ?? 0}%
+          </div>
+          <div className="mt-1 h-1.5 w-full rounded-full surface-2 overflow-hidden">
+            <div className="h-full bg-accent transition-all" style={{ width: `${status.progress ?? 0}%` }} />
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {status?.running ? (
+          <Button variant="danger" icon={<Square size={14} />} onClick={() => run(() => window.hue.mirrorStop())}>
+            Stop mirror
+          </Button>
+        ) : (
+          <Button variant="primary" icon={<Smartphone size={14} />} loading={busy || status?.installing} disabled={!status?.supported} onClick={() => run(() => window.hue.mirrorStart(phone?.serial))}>
+            {status?.installed ? 'Open phone mirror' : 'Set up & open phone mirror'}
+          </Button>
+        )}
+        <Button variant="subtle" icon={<RefreshCw size={14} />} disabled={!status?.installed || busy} onClick={() => run(() => window.hue.mirrorRefreshDevices())}>
+          Refresh phones
+        </Button>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Wireless debugging IP:port" className="w-56" />
+          <Button variant="outline" disabled={!address.trim() || busy} onClick={() => run(() => window.hue.mirrorConnect(address))}>
+            Connect
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {status?.devices.length ? (
+          status.devices.map((d) => (
+            <InfoChip key={d.serial} icon={<Smartphone size={13} />} tone={d.state === 'device' ? undefined : 'amber'} title={d.serial}>
+              {deviceLabel(d)}
+              {status.running && status.serial === d.serial ? ' · mirroring' : ''}
+            </InfoChip>
+          ))
+        ) : (
+          <span className="text-xs text-muted">{status?.installed ? 'No phone detected yet.' : 'scrcpy is not set up yet — the first click downloads it.'}</span>
+        )}
+      </div>
+
+      {(shownError || status?.hint) && (
+        <div className={cx('mt-3 text-sm rounded-xl px-3 py-2', shownError ? 'bg-rose-500/10 text-rose-400' : 'surface-2 text-muted')}>
+          {shownError ?? status?.hint}
+        </div>
+      )}
+
+      <div className="mt-3 text-xs text-muted">
+        Samsung, HONOR, OPPO, vivo, Xiaomi and ASUS phones can also do this without any setup through Windows' own <span className="font-medium">Phone Link → Apps</span>. A Nest Hub or Echo Show next to the PC works too.
       </div>
     </Card>
   );
@@ -263,6 +387,7 @@ export default function CamerasView() {
           <div className="mt-4">
             <VideoNote />
           </div>
+          <PhoneMirrorCard />
         </div>
         <div className="min-w-0">
           <MotionTimeline events={events} />

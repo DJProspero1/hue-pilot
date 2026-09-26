@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-const EVENT_CHANNELS = new Set(['hue:home', 'hue:status', 'hue:chat-event', 'hue:navigate', 'hue:settings', 'hue:motion-event']);
+const EVENT_CHANNELS = new Set(['hue:home', 'hue:status', 'hue:chat-event', 'hue:navigate', 'hue:settings', 'hue:motion-event', 'hue:mirror-status']);
 
 // contextBridge only copies plain enumerable properties, so we expose two functions and let the
 // renderer build a typed proxy on top (see src/renderer/src/lib/api.ts).

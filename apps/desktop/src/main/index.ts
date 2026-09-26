@@ -26,6 +26,7 @@ import { AssistantChat, listModels } from './llm/chat.ts';
 import { providerMeta, type ProviderId, type ProviderSettings } from '../shared/providers.ts';
 import { LocalApi } from './http-api.ts';
 import { buildSnippets, detectInstalled, findNode, installAgent, mcpScriptPath } from './agents.ts';
+import { PhoneMirror } from './phone-mirror.ts';
 import type { AgentInfo, ChatMessage, CreateSceneInput, HueApi, PairTarget, ScheduleSpec, ScheduleView, Settings } from '../shared/ipc-types.ts';
 
 app.setName('Hue Pilot');
@@ -38,6 +39,8 @@ if (!singleInstance) app.quit();
 
 const config = new ConfigStore();
 const hue = new HueService();
+const mirror = new PhoneMirror(path.join(app.getPath('userData'), 'scrcpy'));
+mirror.on('status', (s) => broadcast('hue:mirror-status', s));
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
@@ -502,6 +505,12 @@ const handlers: Handlers = {
     broadcast('hue:settings', next);
     return next;
   },
+  getMirrorStatus: async () => mirror.status(),
+  mirrorInstall: () => mirror.install(),
+  mirrorRefreshDevices: () => mirror.refreshDevices(),
+  mirrorConnect: (address: string) => mirror.connect(address),
+  mirrorStart: (serial?: string) => mirror.start(serial),
+  mirrorStop: async () => mirror.stop(),
   getAgentInfo: async () => agentInfo(),
   installAgent: (target) => installAgent(target, config.file),
   getAppInfo: async () => ({ version: app.getVersion(), platform: process.platform, configPath: config.file, isPackaged: app.isPackaged, electron: process.versions.electron }),
@@ -567,6 +576,7 @@ async function runScreenshots() {
 app.on('second-instance', showWindow);
 app.on('before-quit', () => {
   quitting = true;
+  mirror.stop();
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' && !(config.settings.minimizeToTray && tray)) app.quit();

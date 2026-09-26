@@ -7,6 +7,7 @@ const EVENT_METHODS: Record<string, string> = {
   onNavigate: 'hue:navigate',
   onSettings: 'hue:settings',
   onMotionEvent: 'hue:motion-event',
+  onMirrorStatus: 'hue:mirror-status',
 };
 
 /** Typed facade over the preload bridge. Every method call becomes an IPC invoke. */
