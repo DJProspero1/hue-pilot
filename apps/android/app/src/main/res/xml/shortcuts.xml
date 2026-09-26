@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="assistant_voice"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_mic"
+        android:shortcutShortLabel="@string/shortcut_voice_short"
+        android:shortcutLongLabel="@string/shortcut_voice_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="huepilot://assistant?listen=1"
+            android:targetPackage="pt.prospero.huepilot"
+            android:targetClass="pt.prospero.huepilot.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="scenes"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_scenes"
+        android:shortcutShortLabel="@string/shortcut_scenes_short"
+        android:shortcutLongLabel="@string/shortcut_scenes_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="huepilot://scenes"
+            android:targetPackage="pt.prospero.huepilot"
+            android:targetClass="pt.prospero.huepilot.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="cameras"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_camera"
+        android:shortcutShortLabel="@string/shortcut_cameras_short"
+        android:shortcutLongLabel="@string/shortcut_cameras_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="huepilot://cameras"
+            android:targetPackage="pt.prospero.huepilot"
+            android:targetClass="pt.prospero.huepilot.MainActivity" />
+    </shortcut>
+</shortcuts>
