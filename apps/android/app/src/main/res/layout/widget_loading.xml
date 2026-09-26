@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Initial layout shown until Glance renders the widget (also the launcher fallback). -->
 <TextView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:gravity="center"
     android:padding="12dp"
-    android:textColor="#FFFFFFFF"
-    android:background="#CC2B2622"
-    android:text="Hue Pilot" />
+    android:textColor="#FFA89F92"
+    android:textSize="12sp"
+    android:background="@drawable/widget_loading_bg"
+    android:text="@string/app_name" />
