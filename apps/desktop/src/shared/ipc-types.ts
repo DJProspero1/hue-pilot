@@ -53,6 +53,18 @@ export interface ConnectionStatus {
   lastUpdate?: number;
 }
 
+/** One entry of the in-memory motion timeline (cameras and motion sensors), newest first when listed. */
+export interface MotionEvent {
+  id: string;
+  /** Device id of the camera or sensor. */
+  sourceId: string;
+  sourceName: string;
+  kind: 'camera' | 'sensor';
+  motion: boolean;
+  /** ISO time reported by the bridge (motion_report.changed) or the time the event arrived. */
+  at: string;
+}
+
 export interface PairTarget {
   host: string;
   port?: number;
@@ -153,6 +165,10 @@ export interface HueApi {
   updateScene(id: string, patch: { name?: string; speed?: number; autoDynamic?: boolean; actions?: SceneAction[] }): Promise<void>;
   deleteScene(id: string): Promise<void>;
   setSensorEnabled(type: ResourceType, id: string, enabled: boolean): Promise<void>;
+  /** Motion detection on/off for a Hue Secure camera (id = camera_motion service id). */
+  setCameraMotionDetection(cameraMotionId: string, enabled: boolean): Promise<void>;
+  /** Motion timeline (cameras + motion sensors) collected while the app runs, newest first. */
+  getMotionEvents(): Promise<MotionEvent[]>;
   searchLights(): Promise<void>;
   updateGroupChildren(type: 'room' | 'zone', id: string, children: { rid: string; rtype: string }[]): Promise<void>;
   createGroup(type: 'room' | 'zone', name: string, archetype: string, children: { rid: string; rtype: string }[]): Promise<string>;
@@ -189,4 +205,5 @@ export interface HueApi {
   onChatEvent(cb: (message: ChatMessage) => void): () => void;
   onNavigate(cb: (route: string) => void): () => void;
   onSettings(cb: (settings: Settings) => void): () => void;
+  onMotionEvent(cb: (event: MotionEvent) => void): () => void;
 }

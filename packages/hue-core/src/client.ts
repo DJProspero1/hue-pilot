@@ -207,6 +207,11 @@ export class HueClient {
     return this.updateResource('grouped_light', groupedLightId, { alert: { action: 'breathe' } });
   }
 
+  /** Motion detection on/off for a Hue Secure camera (`camera_motion` service). */
+  setCameraMotionDetection(cameraMotionId: string, enabled: boolean): Promise<ResourceRef[]> {
+    return this.updateResource('camera_motion', cameraMotionId, { enabled });
+  }
+
   // ---------------------------------------------------------------------------
   // API v1 (schedules, config, light search)
   // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import AccessoriesView from './views/AccessoriesView';
 import AgentsView from './views/AgentsView';
 import AssistantView from './views/AssistantView';
 import AutomationsView from './views/AutomationsView';
+import CamerasView from './views/CamerasView';
 import HomeView from './views/HomeView';
 import LightsView from './views/LightsView';
 import Onboarding from './views/Onboarding';
@@ -77,6 +78,8 @@ function Screen() {
       return <AutomationsView />;
     case 'accessories':
       return <AccessoriesView />;
+    case 'cameras':
+      return <CamerasView />;
     case 'assistant':
       return <AssistantView />;
     case 'agents':

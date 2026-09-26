@@ -1,4 +1,4 @@
-import { Bot, CalendarClock, Home, Lightbulb, Palette, Plug2, Radar, Settings, Wifi, WifiOff } from 'lucide-react';
+import { Bot, CalendarClock, Cctv, Home, Lightbulb, Palette, Plug2, Radar, Settings, Wifi, WifiOff } from 'lucide-react';
 import { useApp, type Route } from '../store';
 import { cx } from './ui';
 
@@ -8,6 +8,7 @@ const NAV: { route: Route; label: string; icon: typeof Home }[] = [
   { route: { view: 'scenes' }, label: 'Scenes', icon: Palette },
   { route: { view: 'automations' }, label: 'Automations', icon: CalendarClock },
   { route: { view: 'accessories' }, label: 'Accessories', icon: Radar },
+  { route: { view: 'cameras' }, label: 'Cameras', icon: Cctv },
   { route: { view: 'assistant' }, label: 'Assistant', icon: Bot },
   { route: { view: 'agents' }, label: 'AI agents', icon: Plug2 },
   { route: { view: 'settings' }, label: 'Settings', icon: Settings },
@@ -20,6 +21,7 @@ export default function Sidebar() {
   const home = useApp((s) => s.home);
   const activeView = route.view === 'room' ? 'home' : route.view;
   const connected = status.state === 'connected';
+  const camerasWithMotion = home.cameras.filter((c) => c.motion === true).length;
 
   return (
     <aside className="flex h-full w-[232px] shrink-0 flex-col border-r border-base" style={{ background: 'var(--sidebar)' }}>
@@ -48,6 +50,12 @@ export default function Sidebar() {
               {label}
               {r.view === 'lights' && home.totalLightsOn > 0 && (
                 <span className="ml-auto rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-semibold text-accent">{home.totalLightsOn}</span>
+              )}
+              {r.view === 'cameras' && camerasWithMotion > 0 && (
+                <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold text-rose-400" title="Motion detected">
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-400 animate-pulse" />
+                  {camerasWithMotion}
+                </span>
               )}
             </button>
           );

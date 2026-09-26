@@ -136,11 +136,58 @@ test('e2e: scenes, effects, identify, all lights', async () => {
   home = await ctx().getHome();
   assert.equal(home.totalLightsOn, 0);
   const overview = await executeTool('get_home_overview', {}, ctx());
-  assert.equal(overview.rooms.length, 5);
+  assert.equal(overview.rooms.length, 6);
   assert.equal(overview.zones.length, 1);
   const sensors = await executeTool('get_sensor_readings', {}, ctx());
   assert.ok(sensors.sensors.some((x) => x.type === 'temperature'));
   assert.ok(sensors.sensors.some((x) => x.type === 'battery'));
+});
+
+test('e2e: cameras in sensor readings, prompt and motion detection tool', async () => {
+  const readings = await executeTool('get_sensor_readings', {}, ctx());
+  const cams = readings.sensors.filter((x) => x.kind === 'camera');
+  assert.equal(cams.length, 2);
+  const front = cams.find((c) => c.name === 'Front door camera');
+  const driveway = cams.find((c) => c.name === 'Driveway camera');
+  assert.ok(front && driveway, 'both mock cameras listed');
+  assert.equal(front.battery, 72);
+  assert.equal(front.motion, false);
+  assert.equal(front.motion_detection_enabled, true);
+  assert.equal(typeof front.lux, 'number');
+  assert.equal(front.connectivity, 'connected');
+  assert.equal(driveway.battery, null);
+  assert.equal(driveway.motion, true);
+  assert.equal(driveway.floodlight.name, 'Driveway floodlight');
+  assert.ok(typeof driveway.last_motion === 'string');
+  assert.ok(!readings.sensors.some((x) => x.type === 'motion' && /camera/i.test(x.device)), 'cameras are not duplicated as motion sensors');
+  const prompt = buildSystemPrompt(await ctx().getHome());
+  assert.ok(prompt.includes('Cameras: Driveway camera (floodlight, motion detected), Front door camera (battery 72%, no motion)'), prompt);
+  assert.ok(TOOL_DEFINITIONS.some((t) => t.name === 'set_camera_motion_detection'));
+
+  const off = await executeTool('set_camera_motion_detection', { camera: 'driveway camera', enabled: false }, ctx());
+  assert.equal(off.ok, true, off.message);
+  assert.equal(off.applied.enabled, false);
+  const home = await ctx().getHome();
+  const drivewayCam = home.cameras.find((c) => c.name === 'Driveway camera');
+  const raw = await client.getResources('camera_motion');
+  const drivewayMotion = raw.find((r) => r.id === drivewayCam.cameraMotionId);
+  assert.equal(drivewayMotion.enabled, false, 'mock reflects enabled:false');
+  assert.equal(drivewayCam.motionEnabled, false);
+  const after = await executeTool('get_sensor_readings', {}, ctx());
+  assert.equal(after.sensors.find((x) => x.kind === 'camera' && x.name === 'Driveway camera').motion_detection_enabled, false);
+
+  const on = await executeTool('set_camera_motion_detection', { camera: 'the driveway', enabled: 'true' }, ctx());
+  assert.equal(on.ok, true, on.message);
+  assert.equal((await ctx().getHome()).cameras.find((c) => c.name === 'Driveway camera').motionEnabled, true);
+  const nf = await executeTool('set_camera_motion_detection', { camera: 'garage cam', enabled: true }, ctx());
+  assert.equal(nf.ok, false);
+  assert.equal(nf.error, 'not_found');
+  const amb = await executeTool('set_camera_motion_detection', { camera: 'camera', enabled: true }, ctx());
+  assert.equal(amb.ok, false);
+  assert.equal(amb.error, 'ambiguous');
+  assert.equal(amb.candidates.length, 2);
+  const bad = await executeTool('set_camera_motion_detection', { camera: 'front door camera' }, ctx());
+  assert.equal(bad.error, 'invalid_argument');
 });
 
 test('e2e: schedules round trip', async () => {

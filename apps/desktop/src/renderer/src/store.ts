@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { EMPTY_HOME, lightHex, type BridgeConnection, type GroupView, type HomeModel, type LightState, type LightView } from '@hue/core';
-import { DEFAULT_SETTINGS, type ChatMessage, type ConnectionStatus, type Settings } from '../../shared/ipc-types.ts';
+import { DEFAULT_SETTINGS, type ChatMessage, type ConnectionStatus, type MotionEvent, type Settings } from '../../shared/ipc-types.ts';
 
 export type Route =
   | { view: 'home' }
@@ -9,9 +9,12 @@ export type Route =
   | { view: 'scenes' }
   | { view: 'automations' }
   | { view: 'accessories' }
+  | { view: 'cameras' }
   | { view: 'assistant' }
   | { view: 'agents' }
   | { view: 'settings' };
+
+const MOTION_EVENT_LIMIT = 200;
 
 export interface Toast {
   id: number;
@@ -39,6 +42,8 @@ interface AppState {
   search: string;
   overrides: Record<string, Override>;
   initError: string | null;
+  /** Motion timeline (cameras + sensors), newest first. */
+  motionEvents: MotionEvent[];
 
   init(): Promise<void>;
   initInner(): Promise<void>;
@@ -122,6 +127,7 @@ export const useApp = create<AppState>((set, get) => ({
   search: '',
   overrides: {},
   initError: null,
+  motionEvents: [],
 
   async init() {
     try {
@@ -148,9 +154,18 @@ export const useApp = create<AppState>((set, get) => ({
       } catch {
         /* status event will explain */
       }
+      window.hue
+        .getMotionEvents()
+        .then((motionEvents) => set({ motionEvents }))
+        .catch(() => undefined);
     }
     window.hue.onHome((home) => get().applyHome(home));
     window.hue.onStatus((status) => set({ status }));
+    window.hue.onMotionEvent((event) => {
+      const current = get().motionEvents;
+      if (current.some((e) => e.id === event.id)) return;
+      set({ motionEvents: [event, ...current].slice(0, MOTION_EVENT_LIMIT) });
+    });
     window.hue.onSettings((settings) => {
       applyTheme(settings.theme);
       set({ settings });
@@ -171,7 +186,8 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   applyHome(home) {
-    set({ home: applyOverrides(home, get().overrides) });
+    // A disconnect sends EMPTY_HOME (updatedAt 0); the main process also drops its motion timeline then.
+    set({ home: applyOverrides(home, get().overrides), ...(home.updatedAt === 0 ? { motionEvents: [] } : {}) });
   },
 
   navigate(route) {

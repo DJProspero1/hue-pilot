@@ -410,6 +410,8 @@ const handlers: Handlers = {
   setSensorEnabled: async (type: ResourceType, id: string, enabled: boolean) => {
     await hue.requireClient().updateResource(type, id, { enabled });
   },
+  setCameraMotionDetection: (cameraMotionId: string, enabled: boolean) => hue.setCameraMotionDetection(cameraMotionId, enabled),
+  getMotionEvents: async () => hue.getMotionEvents(),
   searchLights: async () => {
     await hue.requireClient().searchNewLights();
     setTimeout(() => hue.refresh().catch(() => undefined), 45_000);
@@ -526,6 +528,7 @@ hue.on('status', (status) => {
   broadcast('hue:status', status);
   updateTray();
 });
+hue.on('motion-event', (event) => broadcast('hue:motion-event', event));
 nativeTheme.on('updated', () => {
   if (config.settings.theme === 'system') applyTheme();
 });

@@ -4,7 +4,7 @@
  */
 import { kelvinToRgb, mirekToKelvin, parseColor, parseColorTemperature, rgbToXy } from './color.ts';
 import { resolveByName } from './matching.ts';
-import type { AccessoryView, GroupView, HomeModel, LightView, SceneView } from './model.ts';
+import type { AccessoryView, CameraView, GroupView, HomeModel, LightView, SceneView } from './model.ts';
 import { buildLocalTime, buildScheduleCommand, describeLocalTime, parseLocalTime, parseScheduleCommand, v1Id } from './schedules.ts';
 import type { LightState, ResourceRef, ScheduleMapV1, ScheduleV1 } from './types.ts';
 
@@ -16,6 +16,8 @@ export interface HueClientLike {
   listSchedules(): Promise<ScheduleMapV1>;
   createSchedule(schedule: ScheduleV1): Promise<string>;
   deleteSchedule(id: string): Promise<unknown>;
+  /** Turn a Hue Secure camera's motion detection on or off (PUT camera_motion/{id} { enabled }). */
+  setCameraMotionDetection(cameraMotionId: string, enabled: boolean): Promise<ResourceRef[]>;
 }
 
 export interface ToolContext {
@@ -141,9 +143,23 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'get_sensor_readings',
-    description: 'Read motion sensors, temperature, light level (lux), battery levels and the last button pressed on switches.',
+    description:
+      'Read motion sensors, temperature, light level (lux), battery levels, the last button pressed on switches, and Hue Secure cameras (motion, motion detection on/off, ambient light, battery). The bridge exposes no camera video.',
     parameters: { type: 'object', properties: {} },
     readOnly: true,
+  },
+  {
+    name: 'set_camera_motion_detection',
+    description:
+      'Turn motion detection on or off for a Hue Secure camera by name. Live video is not available through the bridge; only motion detection, light level and battery are.',
+    parameters: {
+      type: 'object',
+      properties: {
+        camera: { type: 'string', description: 'Camera name, e.g. "Front door camera".' },
+        enabled: { type: 'boolean', description: 'true to enable motion detection, false to disable it.' },
+      },
+      required: ['camera', 'enabled'],
+    },
   },
   {
     name: 'list_schedules',
@@ -256,6 +272,14 @@ export function resolveLight(query: string, home: HomeModel, roomHint?: string):
     return { result: ambiguous('lights', r.candidates, (l) => `${l.name}${l.roomName ? ` (${l.roomName})` : ''}`) };
   }
   return { result: notFound('light', query, pool.map((l) => `${l.name}${l.roomName ? ` (${l.roomName})` : ''}`)) };
+}
+
+export function resolveCamera(query: string, home: HomeModel): { camera?: CameraView; result?: ToolResult } {
+  const cameras = home.cameras ?? [];
+  const r = resolveByName(query, cameras);
+  if (r.match) return { camera: r.match };
+  if (r.candidates.length > 1) return { result: ambiguous('cameras', r.candidates) };
+  return { result: notFound('camera', query, cameras.map((c) => c.name)) };
 }
 
 export function resolveScene(query: string, home: HomeModel, roomHint?: string): { scene?: SceneView; result?: ToolResult } {
@@ -382,7 +406,44 @@ function sensorReadings(home: HomeModel) {
     for (const b of a.buttons) if (b.lastEvent) push(a, 'button', b.lastEvent, `button ${b.controlId}`, b.updated);
     if (a.connectivity && a.connectivity !== 'connected') push(a, 'connectivity', a.connectivity, 'status');
   }
-  return { ok: true, sensors };
+  for (const c of home.cameras ?? []) sensors.push(cameraSummary(c, home));
+  return {
+    ok: true,
+    sensors,
+    ...(home.cameras?.length ? { note: 'Camera video is not available through the bridge; only motion, light level and battery are.' } : {}),
+  };
+}
+
+function cameraSummary(c: CameraView, home: HomeModel) {
+  const floodlight = c.floodlightLightId ? home.lightById[c.floodlightLightId] : undefined;
+  return {
+    device: c.name,
+    product: c.productName,
+    type: 'camera',
+    kind: 'camera',
+    name: c.name,
+    camera_type: c.kind,
+    model: c.modelId,
+    room: c.roomName ?? null,
+    motion: c.motion,
+    motion_detection_enabled: c.motionEnabled,
+    last_motion: c.motionChanged,
+    lux: c.lux,
+    battery: c.batteryLevel,
+    battery_state: c.batteryState,
+    connectivity: c.connectivity ?? null,
+    floodlight: floodlight ? { name: floodlight.name, on: floodlight.on, brightness: Math.round(floodlight.brightness) } : null,
+    video: 'not available through the bridge (end-to-end encrypted, Hue app only)',
+  };
+}
+
+function describeCamera(c: CameraView): string {
+  const bits: string[] = [];
+  if (c.kind === 'floodlight') bits.push('floodlight');
+  if (c.batteryLevel !== null) bits.push(`battery ${c.batteryLevel}%`);
+  bits.push(!c.motionEnabled ? 'motion detection off' : c.motion === true ? 'motion detected' : c.motion === false ? 'no motion' : 'motion unknown');
+  if (c.connectivity && c.connectivity !== 'connected') bits.push(c.connectivity.replace(/_/g, ' '));
+  return `${c.name} (${bits.join(', ')})`;
 }
 
 async function setGroupState(group: GroupView, args: StateArgs, ctx: ToolContext, home: HomeModel): Promise<ToolResult> {
@@ -507,6 +568,22 @@ export async function executeTool(name: string, rawArgs: Record<string, unknown>
       case 'get_sensor_readings':
         return sensorReadings(await ctx.getHome());
 
+      case 'set_camera_motion_detection': {
+        const home = await ctx.getHome();
+        const enabled = bool(args.enabled);
+        if (enabled === undefined) return { ok: false, error: 'invalid_argument', message: 'enabled must be true or false' };
+        const { camera, result } = resolveCamera(str(args.camera), home);
+        if (!camera) return result!;
+        if (!camera.cameraMotionId) return { ok: false, error: 'unsupported', message: `${camera.name} has no motion detection service on the bridge.` };
+        await ctx.client.setCameraMotionDetection(camera.cameraMotionId, enabled);
+        return {
+          ok: true,
+          message: `${camera.name}: motion detection ${enabled ? 'enabled' : 'disabled'}`,
+          camera: { id: camera.id, name: camera.name, kind: camera.kind },
+          applied: { enabled },
+        };
+      }
+
       case 'list_schedules': {
         const home = await ctx.getHome();
         const map = await ctx.client.listSchedules();
@@ -613,15 +690,20 @@ export function buildSystemPrompt(home: HomeModel, extra?: string): string {
       return `- ${fmtGroup(g)}: lights [${lights}]${scenes ? `; scenes [${scenes}]` : ''}`;
     })
     .join('\n');
+  const cameras = (home.cameras ?? []).map(describeCamera).join(', ');
   return [
     'You are Hue Pilot, a friendly assistant that controls the Philips Hue lights in the user\'s home through tools.',
     'Always act with tools rather than describing what you would do. Prefer set_room for whole rooms and set_light for a single lamp.',
     'If a name is ambiguous or not found, ask a short clarifying question. Keep answers to one or two short sentences, confirm what you changed.',
     'Reply in the language the user writes in. Brightness is 1-100%. "Dim" means around 30%, "bright" means 100%.',
     'Never invent rooms, lights or scenes; use get_home_overview when unsure.',
+    cameras
+      ? 'Hue Secure cameras: use get_sensor_readings for motion/battery/light level and set_camera_motion_detection to switch motion detection. The bridge exposes no video; tell the user to open the Philips Hue app for live view or clips.'
+      : '',
     '',
     'Home layout:',
     rooms || '- (no rooms configured)',
+    cameras ? `Cameras: ${cameras}` : '',
     extra ?? '',
   ]
     .filter((l) => l !== undefined)

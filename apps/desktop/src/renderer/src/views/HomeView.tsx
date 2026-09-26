@@ -1,5 +1,5 @@
 import type { GroupView } from '@hue/core';
-import { ChevronRight, Power, Star } from 'lucide-react';
+import { Cctv, ChevronRight, Power, Star } from 'lucide-react';
 import { roomIcon } from '../lib/icons';
 import { useApp } from '../store';
 import { Card, cx, EmptyState, SectionTitle, Slider, Swatch, Toggle, useThrottle } from '../components/ui';
@@ -70,6 +70,8 @@ export default function HomeView() {
   const home = useApp((s) => s.home);
   const status = useApp((s) => s.status);
   const setGroup = useApp((s) => s.setGroup);
+  const navigate = useApp((s) => s.navigate);
+  const camerasWithMotion = home.cameras.filter((c) => c.motionEnabled && c.motion === true);
   const search = useApp((s) => s.search.trim().toLowerCase());
   const favourites = useApp((s) => s.settings.favouriteGroupIds);
   const filter = (g: GroupView) => !search || g.name.toLowerCase().includes(search) || g.lightIds.some((id) => home.lightById[id]?.name.toLowerCase().includes(search));
@@ -92,13 +94,33 @@ export default function HomeView() {
             {home.totalLightsOn === 0 ? 'All lights are off' : `${home.totalLightsOn} of ${home.lights.length} lights on`} · {home.rooms.length} rooms · {home.zones.length} zones
           </p>
         </div>
-        {home.home && (
-          <div className="surface rounded-2xl px-4 py-2.5 flex items-center gap-3">
-            <Power size={16} className={home.home.anyOn ? 'text-accent' : 'text-muted'} />
-            <span className="text-sm font-medium">All lights</span>
-            <Toggle checked={home.home.anyOn} onChange={(v) => setGroup(home.home!.id, { on: v })} label="All lights" />
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {home.cameras.length > 0 && (
+            <button
+              type="button"
+              onClick={() => navigate({ view: 'cameras' })}
+              title="Open cameras"
+              className={cx('surface rounded-2xl px-4 py-2.5 flex items-center gap-2 text-sm font-medium transition-colors hover:border-[var(--border-strong)]', camerasWithMotion.length > 0 && 'border-rose-500/40')}
+            >
+              <Cctv size={16} className={camerasWithMotion.length ? 'text-rose-400' : 'text-muted'} />
+              {camerasWithMotion.length ? (
+                <>
+                  <span className="h-2 w-2 rounded-full bg-rose-400 animate-pulse" />
+                  <span className="text-rose-400">Motion · {camerasWithMotion.map((c) => c.name).join(', ')}</span>
+                </>
+              ) : (
+                <span>{home.cameras.length} camera{home.cameras.length === 1 ? '' : 's'}</span>
+              )}
+            </button>
+          )}
+          {home.home && (
+            <div className="surface rounded-2xl px-4 py-2.5 flex items-center gap-3">
+              <Power size={16} className={home.home.anyOn ? 'text-accent' : 'text-muted'} />
+              <span className="text-sm font-medium">All lights</span>
+              <Toggle checked={home.home.anyOn} onChange={(v) => setGroup(home.home!.id, { on: v })} label="All lights" />
+            </div>
+          )}
+        </div>
       </div>
 
       {favs.length > 0 && !search && (

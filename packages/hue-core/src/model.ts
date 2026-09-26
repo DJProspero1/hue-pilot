@@ -110,6 +110,38 @@ export interface AccessoryView {
   buttons: { id: string; controlId: number; lastEvent?: string; updated?: string }[];
 }
 
+/**
+ * A Hue Secure camera as seen by the bridge. The local API exposes motion detection, ambient light,
+ * battery, connectivity and software version only; video is end-to-end encrypted (Hue app / cloud).
+ */
+export interface CameraView {
+  /** Device id. */
+  id: string;
+  name: string;
+  productName: string;
+  modelId: string;
+  softwareVersion?: string;
+  /** battery = Secure battery camera (CMB001), floodlight = Secure floodlight camera (CMW002), camera = anything else. */
+  kind: 'battery' | 'floodlight' | 'camera';
+  connectivity?: ZigbeeConnectivityResource['status'];
+  batteryLevel: number | null;
+  batteryState: string | null;
+  /** Current motion state; null when the camera reports no valid reading. */
+  motion: boolean | null;
+  /** Motion detection switch (camera_motion.enabled). */
+  motionEnabled: boolean;
+  /** ISO time of the last motion change. */
+  motionChanged: string | null;
+  lux: number | null;
+  lightLevelChanged: string | null;
+  cameraMotionId: string | null;
+  lightLevelId: string | null;
+  /** Light id of the paired floodlight (separate device with archetype hue_floodlight_camera), or null. */
+  floodlightLightId: string | null;
+  roomId?: string;
+  roomName?: string;
+}
+
 export interface BridgeInfo {
   id: string;
   bridgeId: string;
@@ -129,6 +161,7 @@ export interface HomeModel {
   home?: GroupView;
   scenes: SceneView[];
   accessories: AccessoryView[];
+  cameras: CameraView[];
   lightById: Record<string, LightView>;
   groupById: Record<string, GroupView>;
   sceneById: Record<string, SceneView>;
@@ -143,6 +176,7 @@ export const EMPTY_HOME: HomeModel = {
   zones: [],
   scenes: [],
   accessories: [],
+  cameras: [],
   lightById: {},
   groupById: {},
   sceneById: {},
@@ -207,6 +241,38 @@ export function lightHex(light: Pick<LightView, 'colorMode' | 'xy' | 'mirek' | '
   if (light.colorMode === 'xy' && light.xy) return xyToHex(light.xy);
   if (light.colorMode === 'ct' && light.mirek) return mirekToHex(light.mirek);
   return '#ffe4b5';
+}
+
+export const FLOODLIGHT_CAMERA_ARCHETYPE = 'hue_floodlight_camera';
+
+/**
+ * A camera device: has a `camera_motion` service or a product name containing "camera",
+ * but is not itself a light (the floodlight of a Secure floodlight camera is a separate light device).
+ */
+export function isCameraDevice(d: DeviceResource): boolean {
+  const services = Array.isArray(d.services) ? d.services : [];
+  if (services.some((s) => s?.rtype === 'light')) return false;
+  if (services.some((s) => s?.rtype === 'camera_motion')) return true;
+  return /camera/i.test(d.product_data?.product_name ?? '');
+}
+
+/** Lower-case name without trailing digits/punctuation, for pairing "Secure floodlight camera 1" with "Secure floodlight camera". */
+function pairingKey(name: string | undefined): string {
+  return String(name ?? '')
+    .toLowerCase()
+    .replace(/[\s\-_#]*\d+\s*$/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function nameSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.startsWith(b) || b.startsWith(a)) return 0.9;
+  const ta = a.split(' ');
+  const tb = new Set(b.split(' '));
+  const overlap = ta.filter((t) => tb.has(t)).length;
+  return overlap ? overlap / Math.max(ta.length, tb.size) : 0;
 }
 
 export function buildHome(resources: Iterable<Resource>): HomeModel {
@@ -444,11 +510,85 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
   }
   scenes.sort((a, b) => a.groupName.localeCompare(b.groupName) || a.name.localeCompare(b.name));
 
+  // Cameras -------------------------------------------------------------------
+  const roomOfDevice = new Map<string, GroupView>();
+  for (const g of groupsRaw) {
+    if (g.type !== 'room') continue;
+    for (const child of g.children ?? []) if (child?.rtype === 'device' && groupById[g.id]) roomOfDevice.set(child.rid, groupById[g.id]);
+  }
+  const cameras: CameraView[] = [];
+  const cameraDeviceIds = new Set<string>();
+  for (const d of devicesRaw.values()) {
+    if (!isCameraDevice(d)) continue;
+    cameraDeviceIds.add(d.id);
+    const m = motions.get(d.id);
+    const ll = levels.get(d.id);
+    const p = power.get(d.id);
+    const modelId = d.product_data?.model_id ?? '';
+    const rawLevel = ll?.light?.light_level ?? ll?.light?.light_level_report?.light_level;
+    const motionValid = m ? m.motion?.motion_valid !== false : false;
+    const motionRaw = m?.motion?.motion ?? m?.motion?.motion_report?.motion;
+    const room = roomOfDevice.get(d.id);
+    cameras.push({
+      id: d.id,
+      name: d.metadata?.name ?? d.product_data?.product_name ?? 'Camera',
+      productName: d.product_data?.product_name ?? '',
+      modelId,
+      softwareVersion: d.product_data?.software_version,
+      kind: /^CMW/i.test(modelId) ? 'floodlight' : p || /^CMB/i.test(modelId) ? 'battery' : 'camera',
+      connectivity: zigbee.get(d.id)?.status,
+      batteryLevel: typeof p?.power_state?.battery_level === 'number' ? p.power_state.battery_level : null,
+      batteryState: p?.power_state?.battery_state ?? null,
+      motion: m && motionValid && typeof motionRaw === 'boolean' ? motionRaw : null,
+      motionEnabled: m ? m.enabled !== false : false,
+      motionChanged: m?.motion?.motion_report?.changed ?? null,
+      lux: typeof rawLevel === 'number' && ll?.light?.light_level_valid !== false ? lightLevelToLux(rawLevel) : null,
+      lightLevelChanged: ll?.light?.light_level_report?.changed ?? null,
+      cameraMotionId: m?.id ?? null,
+      lightLevelId: ll?.id ?? null,
+      floodlightLightId: null,
+      roomId: room?.id,
+      roomName: room?.name,
+    });
+  }
+  // Pair floodlight cameras (CMW002) with their floodlight light device (archetype hue_floodlight_camera).
+  const floodlights = lights.filter((l) => {
+    const dev = l.deviceId ? devicesRaw.get(l.deviceId) : undefined;
+    return l.archetype === FLOODLIGHT_CAMERA_ARCHETYPE || dev?.product_data?.product_archetype === FLOODLIGHT_CAMERA_ARCHETYPE || dev?.metadata?.archetype === FLOODLIGHT_CAMERA_ARCHETYPE;
+  });
+  if (floodlights.length) {
+    let camCandidates = cameras.filter((c) => c.kind === 'floodlight');
+    if (!camCandidates.length) camCandidates = cameras.filter((c) => c.batteryLevel === null);
+    if (!camCandidates.length) camCandidates = cameras;
+    if (floodlights.length === 1 && camCandidates.length === 1) {
+      camCandidates[0].floodlightLightId = floodlights[0].id;
+    } else {
+      const pairs: { cam: CameraView; light: LightView; score: number }[] = [];
+      for (const cam of camCandidates) {
+        for (const light of floodlights) {
+          let score = nameSimilarity(pairingKey(cam.name), pairingKey(light.name));
+          if (cam.roomId && light.roomId === cam.roomId) score += 0.5;
+          pairs.push({ cam, light, score });
+        }
+      }
+      pairs.sort((a, b) => b.score - a.score || a.cam.name.localeCompare(b.cam.name));
+      const usedLights = new Set<string>();
+      for (const p of pairs) {
+        if (p.cam.floodlightLightId || usedLights.has(p.light.id)) continue;
+        p.cam.floodlightLightId = p.light.id;
+        usedLights.add(p.light.id);
+      }
+    }
+    for (const cam of cameras) if (cam.floodlightLightId && cam.kind !== 'floodlight') cam.kind = 'floodlight';
+  }
+  cameras.sort((a, b) => a.name.localeCompare(b.name));
+
   // Accessories --------------------------------------------------------------
   const accessories: AccessoryView[] = [];
   for (const d of devicesRaw.values()) {
     const hasLight = (d.services ?? []).some((s) => s.rtype === 'light');
     if (hasLight) continue;
+    if (cameraDeviceIds.has(d.id)) continue; // cameras are listed in home.cameras, not as motion sensors
     const m = motions.get(d.id);
     const t = temps.get(d.id);
     const ll = levels.get(d.id);
@@ -538,6 +678,7 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
     home,
     scenes,
     accessories,
+    cameras,
     lightById,
     groupById,
     sceneById,

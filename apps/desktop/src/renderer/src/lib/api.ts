@@ -6,6 +6,7 @@ const EVENT_METHODS: Record<string, string> = {
   onChatEvent: 'hue:chat-event',
   onNavigate: 'hue:navigate',
   onSettings: 'hue:settings',
+  onMotionEvent: 'hue:motion-event',
 };
 
 /** Typed facade over the preload bridge. Every method call becomes an IPC invoke. */

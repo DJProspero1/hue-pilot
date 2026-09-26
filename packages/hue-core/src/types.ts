@@ -183,6 +183,15 @@ export interface MotionResource extends ResourceBase {
   sensitivity?: { status: string; sensitivity: number; sensitivity_max: number };
 }
 
+/**
+ * Motion service of a Hue Secure camera (`camera_motion`). Same shape as `motion`; `enabled` is the
+ * camera's motion-detection switch (PUT /clip/v2/resource/camera_motion/{id} { enabled }).
+ * The bridge exposes no video: live view and clips are end-to-end encrypted and only available in the Hue app.
+ */
+export interface CameraMotionResource extends MotionResource {
+  type: 'camera_motion';
+}
+
 export interface ButtonResource extends ResourceBase {
   type: 'button';
   owner: ResourceRef;
