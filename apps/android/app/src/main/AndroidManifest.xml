@@ -48,16 +48,104 @@
             </intent-filter>
         </activity>
 
+        <!-- Home-screen widgets (Glance). Configuration activity shared by the widgets that need a room/light. -->
+        <activity
+            android:name=".widget.WidgetConfigureActivity"
+            android:exported="true"
+            android:label="@string/widget_configure_label"
+            android:theme="@style/Theme.HuePilot">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <receiver
             android:name=".widget.RoomsWidgetReceiver"
             android:exported="true"
-            android:label="@string/widget_label">
+            android:label="@string/widget_rooms_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/rooms_widget_info" />
+                android:resource="@xml/widget_rooms_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.RoomControlWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_room_control_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_room_control_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.ScenesWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_scenes_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_scenes_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.HomeStatusWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_home_status_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_home_status_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.LightControlWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_light_control_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_light_control_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.AssistantWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_assistant_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_assistant_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.SensorsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_sensors_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_sensors_info" />
+        </receiver>
+        <receiver
+            android:name=".widget.ColorStripWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_color_strip_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_color_strip_info" />
         </receiver>
     </application>
 </manifest>

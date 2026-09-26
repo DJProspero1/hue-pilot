@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material Symbols glyph, tinted at use. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M20,10L20,7c0,-1.1 -0.9,-2 -2,-2L6,5c-1.1,0 -2,0.9 -2,2v3c-1.1,0 -2,0.9 -2,2v5h1.33L4,19h1l0.67,-2h12.67l0.66,2h1l0.67,-2L22,17v-5c0,-1.1 -0.9,-2 -2,-2zM13,7h5v3h-5L13,7zM6,7h5v3L6,10L6,7zM4,12h16v3L4,15v-3z" />
+</vector>

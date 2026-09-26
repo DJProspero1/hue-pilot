@@ -59,8 +59,55 @@ bridge; the app polls `POST /api` every 1.5 s for 60 s. Credentials are stored i
   *Speak replies* (`TextToSpeech`), suggestion chips, inline tool-call cards, quick provider switcher in the header.
 - **Settings**: bridge info / forget, assistant provider selector + one card per provider (masked key, model,
   *Fetch models*, *Get a key* link), theme, default transition time.
-- **Widget**: a Glance home-screen widget with on/off tiles for up to four favourite rooms (star a room in its
-  screen). Compiles and is registered; it was not visually verified on the emulator.
+- **Widgets**: a suite of eight Glance home-screen widgets (see below).
+
+## Widgets
+
+Eight Jetpack Glance widgets live in `widget/`. All use the app's warm near-black palette regardless of the
+launcher theme (`WidgetColors`: card `#1E1B17` at 94 %, tiles `#272319`, amber accent, red for motion),
+`SizeMode.Responsive` buckets expressed in launcher cells (`WidgetSizes.cells(w, h)` = `70·w − 30` × `80·h − 40` dp),
+`updatePeriodMillis` 30 min, and open the app through `huepilot://<route>` deep links.
+
+| Widget | Sizes | What it does | Configure |
+|---|---|---|---|
+| **Rooms** (`RoomsWidget`) | 2×1 … 4×4 | Tile per room/zone: archetype icon, name, "3 of 4 on · 60 %". Lit tiles are tinted with the room's light colour (28 % blend); tap toggles the room. | Rooms and their order (default: favourites, else all) |
+| **Room control** | 4×2, 4×3 | Header with state, On/Off, brightness −/+ and 25/50/75/100 presets, six quick colours, scene chips (active one amber); 4×3 adds a big toggle and a second chip row. | Room (required) |
+| **Scenes** | 2×2 … 4×4 | Scene tiles painted with a rendered palette gradient (`WidgetBitmaps`), name overlaid, check on the active scene; tap activates. | Room, or favourites (default) |
+| **All lights** (`HomeStatusWidget`) | 2×1 … 5×1 | "6 of 11 lights on", colour dots of the lit rooms, *All off* / *All on* (bridge_home grouped light). | – |
+| **Light control** | 2×2 … 4×2 | One light: on/off, brightness −/+ and quick colours (colour swatches, white presets for CT-only lights, none otherwise). | Light (required) |
+| **Ask Hue Pilot** (`AssistantWidget`) | 1×1, 2×1, 3×1 | Mic tile → Assistant tab listening (`huepilot://assistant?listen=1`); 2×1+ adds *All off* and *Good night* quick commands (plain bridge writes). | – |
+| **Sensors & security** | 3×2 … 4×4 | Every motion sensor and Hue Secure camera (`productName` contains "camera"): motion pill (red when true), temperature, lux, battery, "x min ago"; refresh button; tap opens Accessories. | – |
+| **Colour strip** | 3×1 … 5×1 | Room name + eight quick-colour swatches → `setGroupColor`. | Room (required) |
+
+How they are wired:
+
+- `WidgetData.load()` builds the `WidgetState`: it connects the app's `HueRepository` (so the bridge is fetched even
+  when the app is not running), waits up to 4 s for resources, persists them to `files/widget_snapshot.json`
+  (`SnapshotCache`) and falls back to that cache with an "offline" hint when the bridge cannot be reached.
+- `WidgetActions.perform()` handles every tap through one `ActionCallback` (`HueWidgetAction` with `op`/`id`/`arg`
+  parameters): the write goes through the repository (optimistic patch + PUT), all widgets re-render at once, the
+  touched resource types are re-fetched and the widgets render again if the bridge state differs.
+- `WidgetUpdater.updateAll()` re-renders every placed widget of every kind (coalesced); `AppContainer` calls it
+  whenever `repository.snapshot` changes (debounced 800 ms) so widgets follow the event stream while the app runs.
+- `WidgetPrefs` stores a `WidgetConfig` JSON per `appWidgetId`; `WidgetConfigureActivity` (Compose, app theme) is the
+  `android:configure` target and is also opened after a widget is pinned from the app (`WidgetCatalog.requestPin`,
+  which uses `AppWidgetManager.requestPinAppWidget` with a config callback for widgets that need a room/light).
+- `WidgetCatalog.all` lists every widget (`WidgetInfo`: id, title, description, preview drawable, receiver class,
+  size hint) for the in-app gallery; it has no Compose UI dependencies.
+
+Debug builds include `WidgetPreviewActivity`, an `AppWidgetHost` harness that binds every provider at its launcher
+cell sizes over a fake wallpaper and can write PNG crops (2 px/dp) of each widget — that is how the design was checked
+and how the `drawable-nodpi/widget_preview_*.png` picker images were produced:
+
+```bash
+adb shell appwidget grantbind --package pt.prospero.huepilot --user 0     # after installing the APK
+adb shell am start -n pt.prospero.huepilot/.widget.WidgetPreviewActivity --es widget all --ez capture true
+adb pull /sdcard/Android/data/pt.prospero.huepilot/files/widget-previews   # rooms_4x2.png, scenes_4x3.png, …
+```
+
+Extras: `widget` (catalog id or `all`), `capture`, `pin <id>` (runs `requestPin`), `cell_w` / `cell_h` (dp per cell,
+default 70 × 80). Glance limits every Row/Column to 10 children, so the layouts space items with padding on wrapper
+boxes rather than spacers.
 
 Colour maths (sRGB ↔ CIE xy with gamut clipping, mirek ↔ Kelvin, black-body swatches) lives in
 `domain/ColorMath.kt` and matches `packages/hue-core`.

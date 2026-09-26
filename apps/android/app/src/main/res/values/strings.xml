@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hue Pilot</string>
-    <string name="widget_label">Hue Pilot rooms</string>
-    <string name="widget_description">Quick on/off toggles for your favourite rooms.</string>
+    <!-- Home-screen widgets (labels shown in the launcher picker) -->
+    <string name="widget_rooms_label">Rooms</string>
+    <string name="widget_rooms_description">Tiles for your rooms and zones, tinted with their light colour. Tap a tile to toggle it.</string>
+    <string name="widget_room_control_label">Room control</string>
+    <string name="widget_room_control_description">On/off, brightness presets, quick colours and scenes for one room.</string>
+    <string name="widget_scenes_label">Scenes</string>
+    <string name="widget_scenes_description">Scene tiles painted with their palette. Tap to activate.</string>
+    <string name="widget_home_status_label">All lights</string>
+    <string name="widget_home_status_description">How many lights are on, with All off / All on buttons.</string>
+    <string name="widget_light_control_label">Light control</string>
+    <string name="widget_light_control_description">On/off, brightness and quick colours for a single light.</string>
+    <string name="widget_assistant_label">Ask Hue Pilot</string>
+    <string name="widget_assistant_description">Talk to the assistant, plus All off and Good night shortcuts.</string>
+    <string name="widget_sensors_label">Sensors &amp; security</string>
+    <string name="widget_sensors_description">Motion sensors and Hue Secure cameras: motion, temperature, light level, battery.</string>
+    <string name="widget_color_strip_label">Colour strip</string>
+    <string name="widget_color_strip_description">Eight quick colours for one room.</string>
+    <string name="widget_configure_label">Widget settings</string>
 </resources>
