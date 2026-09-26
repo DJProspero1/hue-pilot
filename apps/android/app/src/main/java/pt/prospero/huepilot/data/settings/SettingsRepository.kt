@@ -28,6 +28,8 @@ data class AppSettings(
     val assistantProvider: AssistantProvider = AssistantProvider.GEMINI,
     val providers: Map<AssistantProvider, ProviderConfig> = defaultProviders(),
     val theme: ThemeMode = ThemeMode.SYSTEM,
+    /** Material You (wallpaper) colours instead of the Hue Pilot palette. */
+    val wallpaperColors: Boolean = false,
     val transitionMs: Int = 400,
     val speakReplies: Boolean = false,
     val favouriteRoomIds: List<String> = emptyList(),
@@ -53,6 +55,7 @@ object SettingsKeys {
     val BRIDGE_NAME = stringPreferencesKey("bridge_name")
     val ASSISTANT_PROVIDER = stringPreferencesKey("assistant_provider")
     val THEME = stringPreferencesKey("theme")
+    val WALLPAPER = booleanPreferencesKey("wallpaper_colors")
     val TRANSITION = intPreferencesKey("transition_ms")
     val SPEAK = booleanPreferencesKey("speak_replies")
     val FAVOURITES = stringPreferencesKey("favourite_rooms")
@@ -127,6 +130,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setTheme(mode: ThemeMode) { context.dataStore.edit { it[SettingsKeys.THEME] = mode.name } }
+    suspend fun setWallpaperColors(on: Boolean) { context.dataStore.edit { it[SettingsKeys.WALLPAPER] = on } }
     suspend fun setTransitionMs(ms: Int) { context.dataStore.edit { it[SettingsKeys.TRANSITION] = ms.coerceIn(0, 60_000) } }
     suspend fun setSpeakReplies(on: Boolean) { context.dataStore.edit { it[SettingsKeys.SPEAK] = on } }
     suspend fun setFavouriteRooms(ids: List<String>) { context.dataStore.edit { it[SettingsKeys.FAVOURITES] = ids.joinToString(",") } }
@@ -157,6 +161,7 @@ class SettingsRepository(private val context: Context) {
                 assistantProvider = AssistantProvider.fromId(p[SettingsKeys.ASSISTANT_PROVIDER]),
                 providers = providers,
                 theme = p[SettingsKeys.THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
+                wallpaperColors = p[SettingsKeys.WALLPAPER] ?: false,
                 transitionMs = p[SettingsKeys.TRANSITION] ?: 400,
                 speakReplies = p[SettingsKeys.SPEAK] ?: false,
                 favouriteRoomIds = p[SettingsKeys.FAVOURITES]?.split(',')?.filter { it.isNotBlank() } ?: emptyList(),

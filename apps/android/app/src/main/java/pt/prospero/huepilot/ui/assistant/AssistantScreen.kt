@@ -74,7 +74,7 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
+fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit, autoListen: Boolean = false, onAutoListenHandled: () -> Unit = {}) {
     val state by vm.state.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -126,6 +126,10 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenSettings: () -> Unit) {
         if (state.listening) { recognizer.stopListening(); vm.setListening(false); return }
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (granted) startListening() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    // Opened from a widget / huepilot://assistant?listen=1: start listening right away.
+    LaunchedEffect(autoListen) {
+        if (autoListen) { onAutoListenHandled(); if (!state.listening) onMic() }
     }
 
     Scaffold(

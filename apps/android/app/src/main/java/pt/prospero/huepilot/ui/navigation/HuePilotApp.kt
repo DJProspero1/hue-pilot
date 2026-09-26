@@ -25,7 +25,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import pt.prospero.huepilot.LaunchRequest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -80,7 +85,11 @@ private val tabs = listOf(
 )
 
 @Composable
-fun HuePilotRoot(container: AppContainer) {
+fun HuePilotRoot(
+    container: AppContainer,
+    launch: StateFlow<LaunchRequest?> = MutableStateFlow(null),
+    onLaunchHandled: () -> Unit = {},
+) {
     val factory = remember { HueViewModelFactory(container) }
     val settings by container.settingsState.collectAsStateWithLifecycle()
     when {
@@ -89,16 +98,33 @@ fun HuePilotRoot(container: AppContainer) {
             val vm: OnboardingViewModel = viewModel(factory = factory)
             OnboardingScreen(vm)
         }
-        else -> MainScaffold(factory)
+        else -> MainScaffold(factory, launch, onLaunchHandled)
     }
 }
 
 @Composable
-private fun MainScaffold(factory: HueViewModelFactory) {
+private fun MainScaffold(factory: HueViewModelFactory, launch: StateFlow<LaunchRequest?>, onLaunchHandled: () -> Unit) {
     val nav = rememberNavController()
     val hueVm: HueViewModel = viewModel(factory = factory)
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(Unit) { hueVm.messages.collect { snackbar.showSnackbar(it) } }
+
+    // External navigation requests (widgets, huepilot:// links, debug launches).
+    val request by launch.collectAsStateWithLifecycle()
+    var pendingListen by remember { mutableStateOf(false) }
+    LaunchedEffect(request?.nonce) {
+        val r = request ?: return@LaunchedEffect
+        val route = r.route.trim('/')
+        val known = tabs.any { it.route == route } || route == Routes.SETTINGS || route.startsWith("room/") || route.startsWith("light/")
+        if (known) {
+            pendingListen = r.listen && route == Routes.ASSISTANT
+            nav.navigate(route) {
+                if (tabs.any { it.route == route }) popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                launchSingleTop = true
+            }
+        }
+        onLaunchHandled()
+    }
 
     val backStack by nav.currentBackStackEntryAsState()
     val currentDestination = backStack?.destination
@@ -137,7 +163,7 @@ private fun MainScaffold(factory: HueViewModelFactory) {
             composable(Routes.ACCESSORIES) { AccessoriesScreen(hueVm) }
             composable(Routes.ASSISTANT) {
                 val vm: AssistantViewModel = viewModel(factory = factory)
-                AssistantScreen(vm, onOpenSettings = { nav.navigate(Routes.SETTINGS) })
+                AssistantScreen(vm, onOpenSettings = { nav.navigate(Routes.SETTINGS) }, autoListen = pendingListen, onAutoListenHandled = { pendingListen = false })
             }
             composable(Routes.SETTINGS) {
                 val vm: SettingsViewModel = viewModel(factory = factory)

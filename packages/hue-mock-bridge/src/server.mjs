@@ -233,6 +233,35 @@ export function createSeed() {
   res.get(switchDev).services.push({ rid: swPower.id, rtype: 'device_power' });
   zigbee(switchDev);
 
+  // Hue Secure cameras, shaped exactly like a real Hue Bridge Pro reports them:
+  // a battery camera (camera_motion + device_power + light_level) and a floodlight camera
+  // (camera_motion + light_level) whose floodlight is a separate light device (archetype hue_floodlight_camera).
+  const mkCamera = ({ name, model, product, battery, motion = false, lux = 12000, software = '2.86.1' }) => {
+    const deviceId = randomUUID();
+    const camMotion = put({ id: randomUUID(), type: 'camera_motion', owner: { rid: deviceId, rtype: 'device' }, enabled: true, motion: { motion, motion_valid: true, motion_report: { changed: now(), motion } } });
+    const level = put({ id: randomUUID(), type: 'light_level', owner: { rid: deviceId, rtype: 'device' }, enabled: true, light: { light_level: lux, light_level_valid: true, light_level_report: { changed: now(), light_level: lux } } });
+    const services = [{ rid: camMotion.id, rtype: 'camera_motion' }, { rid: level.id, rtype: 'light_level' }];
+    if (battery != null) {
+      const power = put({ id: randomUUID(), type: 'device_power', owner: { rid: deviceId, rtype: 'device' }, power_state: { battery_state: battery < 20 ? 'low' : 'normal', battery_level: battery } });
+      services.push({ rid: power.id, rtype: 'device_power' });
+    }
+    put({
+      id: deviceId,
+      type: 'device',
+      product_data: { model_id: model, manufacturer_name: 'Signify Netherlands B.V.', product_name: product, product_archetype: 'unknown_archetype', certified: true, software_version: software },
+      metadata: { name, archetype: 'unknown_archetype' },
+      identify: {},
+      services,
+    });
+    zigbee(deviceId);
+    return deviceId;
+  };
+  const cam1 = mkCamera({ name: 'Front door camera', model: 'CMB001', product: 'Secure battery camera', battery: 72, lux: 16000 });
+  const cam2 = mkCamera({ name: 'Driveway camera', model: 'CMW002', product: 'Secure floodlight camera', battery: null, motion: true, lux: 4000 });
+  const floodlight = mkLight({ name: 'Driveway floodlight', archetype: 'hue_floodlight_camera', product: 'Secure floodlight camera', model: '442296118491', on: false, bri: 100, mirek: 300 });
+  mkGroup('room', { name: 'Driveway', archetype: 'driveway', children: dev([floodlight]) });
+  res.get(homeId).children.push({ rid: cam1, rtype: 'device' }, { rid: cam2, rtype: 'device' }, { rid: floodlight.deviceId, rtype: 'device' });
+
   return res;
 }
 
@@ -559,7 +588,7 @@ export function createMockBridge({ port = 8080, host = '0.0.0.0', log = true, si
           if (body.metadata || body.actions || body.speed !== undefined || body.palette) emit('update', [{ id, id_v1: r.id_v1, type: 'scene', metadata: r.metadata, speed: r.speed, auto_dynamic: r.auto_dynamic }]);
           return json(res, 200, { errors: [], data: [{ rid: id, rtype: 'scene' }] });
         }
-        if (type === 'motion' || type === 'temperature' || type === 'light_level') {
+        if (type === 'motion' || type === 'camera_motion' || type === 'temperature' || type === 'light_level') {
           if (typeof body.enabled === 'boolean') r.enabled = body.enabled;
           if (body.sensitivity && r.sensitivity) r.sensitivity.sensitivity = body.sensitivity.sensitivity;
           emit('update', [{ id, type, owner: r.owner, enabled: r.enabled, ...(r.sensitivity ? { sensitivity: r.sensitivity } : {}) }]);
@@ -648,6 +677,11 @@ export function createMockBridge({ port = 8080, host = '0.0.0.0', log = true, si
               if (svc) {
                 svc.motion = { motion, motion_valid: true, motion_report: { changed: now(), motion } };
                 emit('update', [{ id: svc.id, type: 'motion', owner: svc.owner, motion: svc.motion }]);
+              }
+              const cam = byType('camera_motion')[0];
+              if (cam && cam.enabled !== false) {
+                cam.motion = { motion: !motion, motion_valid: true, motion_report: { changed: now(), motion: !motion } };
+                emit('update', [{ id: cam.id, type: 'camera_motion', owner: cam.owner, motion: cam.motion }]);
               }
               const t = byType('temperature')[0];
               if (t) {
