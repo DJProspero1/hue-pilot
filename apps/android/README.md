@@ -37,8 +37,10 @@ cd apps/android
 ./gradlew lintDebug
 ```
 
-`local.properties` must point at the SDK (`sdk.dir=...`). The release build is signed with
-`keystore/hue-pilot.jks` (alias/passwords in `keystore.properties`; personal project, kept in the repo).
+`local.properties` must point at the SDK (`sdk.dir=...`). Release builds are signed with a keystore that is
+**not** in the repository: copy `keystore.properties.example` to `keystore.properties`, create
+`keystore/hue-pilot.jks` with the `keytool` command in that file, and fill in the passwords. Without it
+`assembleRelease` still builds, but unsigned.
 
 Notes for this machine: `gradle.properties` sets `android.overridePathCheck=true` (the checkout path contains
 non-ASCII characters) and `org.gradle.vfs.watch=false` (file-system watching missed changes under that path).

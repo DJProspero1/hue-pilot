@@ -136,7 +136,7 @@ export default function Onboarding() {
               <div className="surface rounded-3xl p-5">
                 <div className="font-medium mb-3">Connect by IP address</div>
                 <div className="flex gap-2">
-                  <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="192.168.1.74" onKeyDown={(e) => { const t = manualTarget(); if (e.key === 'Enter' && t) startPairing(t); }} />
+                  <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="192.168.1.2" onKeyDown={(e) => { const t = manualTarget(); if (e.key === 'Enter' && t) startPairing(t); }} />
                   <Button variant="primary" disabled={!manual.trim()} onClick={() => { const t = manualTarget(); if (t) startPairing(t); }}>Connect</Button>
                 </div>
                 <button className="mt-3 inline-flex items-center gap-1 text-xs text-muted hover:text-[var(--fg)]" onClick={() => setAdvanced((v) => !v)}>

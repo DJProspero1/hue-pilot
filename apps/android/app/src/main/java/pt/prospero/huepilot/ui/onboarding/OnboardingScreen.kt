@@ -121,7 +121,7 @@ private fun DiscoveryView(state: OnboardingState, vm: OnboardingViewModel) {
             value = state.manualHost,
             onValueChange = vm::setManualHost,
             label = { Text("Bridge IP address") },
-            placeholder = { Text("192.168.1.74") },
+            placeholder = { Text("192.168.1.2") },
             singleLine = true,
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth(),

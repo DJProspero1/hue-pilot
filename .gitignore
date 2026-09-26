@@ -17,3 +17,5 @@ apps/android/app/*.iml
 apps/android/.kotlin/
 *.keystore.local
 .claude/
+apps/android/keystore/
+apps/android/keystore.properties

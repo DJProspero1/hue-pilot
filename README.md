@@ -63,7 +63,7 @@ Names are matched fuzzily ("the office lights" → room *Office*). Colours accep
 Standalone MCP usage without the desktop app:
 
 ```
-HUE_BRIDGE_HOST=192.168.1.74 HUE_APP_KEY=<key> node packages/hue-mcp/dist/hue-mcp.mjs
+HUE_BRIDGE_HOST=192.168.1.2 HUE_APP_KEY=<key> node packages/hue-mcp/dist/hue-mcp.mjs
 ```
 
 ## Development
