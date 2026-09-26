@@ -35,7 +35,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -58,12 +60,14 @@ import pt.prospero.huepilot.ui.theme.hueTokens
 @Composable
 fun OnboardingScreen(vm: OnboardingViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        when (val p = state.pairing) {
-            is PairingState.InProgress -> PairingView(p, onCancel = vm::cancelPairing)
-            is PairingState.Failed -> FailedView(p.message, onRetry = vm::cancelPairing)
-            PairingState.Success -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-            PairingState.Idle -> DiscoveryView(state, vm)
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) {
+        Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+            when (val p = state.pairing) {
+                is PairingState.InProgress -> PairingView(p, onCancel = vm::cancelPairing)
+                is PairingState.Failed -> FailedView(p.message, onRetry = vm::cancelPairing)
+                PairingState.Success -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                PairingState.Idle -> DiscoveryView(state, vm)
+            }
         }
     }
 }
