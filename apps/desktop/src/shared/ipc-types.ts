@@ -170,6 +170,18 @@ export interface HueApi {
   /** Motion timeline (cameras + motion sensors) collected while the app runs, newest first. */
   getMotionEvents(): Promise<MotionEvent[]>;
 
+  // Hue account / cloud live view (experimental)
+  getCloudStatus(): Promise<CloudStatus>;
+  /** Opens the Hue sign-in window; resolves when the login completes or is cancelled. */
+  cloudSignIn(): Promise<CloudStatus>;
+  cloudSignOut(): Promise<CloudStatus>;
+  cloudRefresh(): Promise<CloudStatus>;
+  cloudSetHome(homeId: string): Promise<CloudStatus>;
+  /** Wakes the camera and returns the signaling session for the renderer's WebRTC viewer. */
+  cloudPrepareLiveView(cameraId: string): Promise<LiveViewSession>;
+  /** Recent cloud/live-view log lines (for the diagnostics panel). */
+  cloudLog(): Promise<string[]>;
+
   // phone mirror ("watch live on this PC" through the Philips Hue app on an Android phone)
   getMirrorStatus(): Promise<MirrorStatus>;
   mirrorInstall(): Promise<MirrorStatus>;
@@ -215,6 +227,47 @@ export interface HueApi {
   onSettings(cb: (settings: Settings) => void): () => void;
   onMotionEvent(cb: (event: MotionEvent) => void): () => void;
   onMirrorStatus(cb: (status: MirrorStatus) => void): () => void;
+  onCloudStatus(cb: (status: CloudStatus) => void): () => void;
+  onCloudLog(cb: (line: string) => void): () => void;
+}
+
+export interface CloudHome {
+  id: string;
+  name: string;
+}
+
+export interface CloudCamera {
+  /** Device id as the cloud names it (usually the camera's MAC without separators). */
+  id: string;
+  name: string;
+  model: string | null;
+  online: boolean | null;
+  /** Field names the cloud returned for this device (diagnostics only). */
+  raw: string[];
+}
+
+export interface CloudStatus {
+  signedIn: boolean;
+  busy: boolean;
+  homeId: string | null;
+  homes: CloudHome[];
+  cameras: CloudCamera[];
+  tokenExpiresAt: number | null;
+  canRefresh: boolean;
+  error: string | null;
+}
+
+/** Everything the renderer needs to open a WebRTC live-view session through Kinesis signaling. */
+export interface LiveViewSession {
+  cameraId: string;
+  cameraName: string;
+  clientId: string;
+  wssUrl: string;
+  iceServers: { urls: string | string[]; username?: string; credential?: string }[];
+  region: string;
+  channelArn: string;
+  responseKeys: string[];
+  expiresAt: number;
 }
 
 /** An Android device known to adb. */

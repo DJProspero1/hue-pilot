@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, Tray } from 'electron';
 import {
   buildSystemPrompt,
   buildLocalTime,
@@ -27,6 +27,8 @@ import { providerMeta, type ProviderId, type ProviderSettings } from '../shared/
 import { LocalApi } from './http-api.ts';
 import { buildSnippets, detectInstalled, findNode, installAgent, mcpScriptPath } from './agents.ts';
 import { PhoneMirror } from './phone-mirror.ts';
+import { HueCloud, HUE_AUDIENCE } from './hue-cloud.ts';
+import { signInWithHueAccount } from './cloud-login.ts';
 import type { AgentInfo, ChatMessage, CreateSceneInput, HueApi, PairTarget, ScheduleSpec, ScheduleView, Settings } from '../shared/ipc-types.ts';
 
 app.setName('Hue Pilot');
@@ -41,6 +43,28 @@ const config = new ConfigStore();
 const hue = new HueService();
 const mirror = new PhoneMirror(path.join(app.getPath('userData'), 'scrcpy'));
 mirror.on('status', (s) => broadcast('hue:mirror-status', s));
+
+// Hue account (cloud live view). Tokens are encrypted with the OS keychain when available.
+const cloudLog: string[] = [];
+const cloud = new HueCloud({
+  file: path.join(app.getPath('userData'), 'hue-account.json'),
+  encrypt: (plain) => (safeStorage.isEncryptionAvailable() ? `enc:${safeStorage.encryptString(plain).toString('base64')}` : plain),
+  decrypt: (data) => (data.startsWith('enc:') ? safeStorage.decryptString(Buffer.from(data.slice(4), 'base64')) : data),
+  log: (line) => {
+    const entry = `${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}  ${line}`;
+    cloudLog.push(entry);
+    if (cloudLog.length > 200) cloudLog.shift();
+    broadcast('hue:cloud-log', entry);
+  },
+});
+cloud.on('status', (s) => broadcast('hue:cloud-status', s));
+/**
+ * Audiences to try for the Hue Auth0 login, in order. Probed on 2026-09-26: the tenant accepts
+ * `https://account.meethue.com` and the default audience; `https://api.meethue.com` (used by an
+ * older community project) is rejected with "Service not found". If the account API later refuses
+ * the token (401), the next audience is tried — the Auth0 session cookie makes that instant.
+ */
+const CLOUD_AUDIENCES: (string | null)[] = ['https://account.meethue.com', null, HUE_AUDIENCE];
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
@@ -505,6 +529,13 @@ const handlers: Handlers = {
     broadcast('hue:settings', next);
     return next;
   },
+  getCloudStatus: async () => cloud.status(),
+  cloudSignIn: () => signInWithHueAccount(cloud, win, CLOUD_AUDIENCES, (line) => cloud.emit('log', line)),
+  cloudSignOut: async () => cloud.signOut(),
+  cloudRefresh: () => cloud.discover(),
+  cloudSetHome: (homeId: string) => cloud.setHome(homeId),
+  cloudPrepareLiveView: (cameraId: string) => cloud.prepareLiveView(cameraId),
+  cloudLog: async () => [...cloudLog],
   getMirrorStatus: async () => mirror.status(),
   mirrorInstall: () => mirror.install(),
   mirrorRefreshDevices: () => mirror.refreshDevices(),
@@ -584,6 +615,7 @@ app.on('window-all-closed', () => {
 app.on('activate', showWindow);
 
 app.whenReady().then(async () => {
+  cloud.load();
   nativeTheme.themeSource = config.settings.theme;
   createWindow();
   createTray();

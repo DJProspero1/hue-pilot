@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, cx, EmptyState, Input, Slider, Toggle, useThrottle } from '../components/ui';
 import { lightIcon } from '../lib/icons';
 import { useApp } from '../store';
+import { CloudLiveViewCard } from './CloudLiveView';
 import type { MirrorDevice, MirrorStatus, MotionEvent } from '../../../shared/ipc-types.ts';
 
 function ago(iso?: string | null): string {
@@ -387,6 +388,7 @@ export default function CamerasView() {
           <div className="mt-4">
             <VideoNote />
           </div>
+          <CloudLiveViewCard cameras={cameras.map((c) => ({ id: c.id, name: c.name }))} />
           <PhoneMirrorCard />
         </div>
         <div className="min-w-0">
