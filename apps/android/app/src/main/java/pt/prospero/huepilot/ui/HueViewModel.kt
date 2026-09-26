@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import pt.prospero.huepilot.AppContainer
+import pt.prospero.huepilot.data.hue.AccessoryUi
 import pt.prospero.huepilot.data.hue.GroupUi
 import pt.prospero.huepilot.data.hue.HomeSnapshot
 import pt.prospero.huepilot.data.hue.LightUi
@@ -81,7 +82,10 @@ class HueViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     // Accessories
-    fun setMotionEnabled(motionId: String, enabled: Boolean) = run { repo.setMotionEnabled(motionId, enabled) }
+    fun setMotionEnabled(accessory: AccessoryUi, enabled: Boolean) = run {
+        val id = accessory.motionId ?: return@run
+        repo.setMotionEnabled(id, enabled, accessory.motionType ?: "motion")
+    }
     fun renameDevice(deviceId: String, name: String) = run { if (name.isNotBlank()) repo.renameDevice(deviceId, name) }
 
     fun toggleFavouriteRoom(roomId: String) = run {

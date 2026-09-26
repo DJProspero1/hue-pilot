@@ -69,7 +69,9 @@ class HueTools(private val repo: HueRepository) {
                 "effect" to enumOf("Effect name.", effectNames),
             ), listOf("target", "effect")))
         add(decl("identify_light", "Make a light blink (breathe) so the user can find it.", mapOf("light" to str("Light name (or id).")), listOf("light")))
-        add(decl("get_sensor_readings", "Read motion, temperature, light level, battery and switch button sensors.", emptyMap(), emptyList()))
+        add(decl("get_sensor_readings", "Read motion sensors, Hue Secure cameras (motion, ambient light, battery), temperature, light level, battery and switch button sensors.", emptyMap(), emptyList()))
+        add(decl("set_camera_motion_detection", "Enable or disable motion detection on a Hue Secure camera.",
+            mapOf("camera" to str("Camera name (or id)."), "enabled" to bool("true = detect motion, false = pause detection.")), listOf("camera", "enabled")))
         add(decl("list_schedules", "List timers/schedules stored on the bridge.", emptyMap(), emptyList()))
         add(decl("create_schedule", "Create a bridge-side schedule that changes a room, zone or light at a time of day.",
             mapOf(
@@ -119,6 +121,7 @@ class HueTools(private val repo: HueRepository) {
             "set_effect" -> setEffect(args)
             "identify_light" -> identifyLight(args)
             "get_sensor_readings" -> sensorReadings()
+            "set_camera_motion_detection" -> setCameraMotionDetection(args)
             "list_schedules" -> listSchedules()
             "create_schedule" -> createSchedule(args)
             "delete_schedule" -> deleteSchedule(args)
@@ -143,7 +146,8 @@ class HueTools(private val repo: HueRepository) {
             !ok -> "Failed: ${result["message"]?.jsonPrimitive?.content ?: error ?: name}"
             else -> when (name) {
                 "get_home_overview" -> "Read home overview"
-                "get_sensor_readings" -> "Read sensors"
+                "get_sensor_readings" -> "Read sensors and cameras"
+                "set_camera_motion_detection" -> "Camera motion detection updated"
                 "list_schedules" -> "Listed schedules"
                 else -> name.replace('_', ' ')
             }
@@ -367,11 +371,32 @@ class HueTools(private val repo: HueRepository) {
         return ok("${light.name} is blinking")
     }
 
+    private suspend fun setCameraMotionDetection(args: JsonObject): JsonObject {
+        val q = args.str("camera") ?: throw IllegalArgumentException("camera is required")
+        val enabled = args.bool("enabled") ?: throw IllegalArgumentException("enabled is required")
+        val res = NameMatcher.match(q, snap.cameras, { it.name }, { it.deviceId })
+        val cam = (res as? MatchResult.Found)?.item ?: return matchFail(res, "camera", q) { it.name }
+        val motionId = cam.motionId ?: return err("unsupported", "${cam.name} has no motion detection service")
+        repo.setMotionEnabled(motionId, enabled, cam.motionType ?: "camera_motion")
+        return ok("Motion detection ${if (enabled) "enabled" else "paused"} on ${cam.name}")
+    }
+
     private fun sensorReadings(): JsonObject = buildJsonObject {
         put("ok", true)
+        put("cameras", buildJsonArray {
+            for (c in snap.cameras) {
+                add(buildJsonObject {
+                    put("device", c.name); put("model", JsonPrimitive(c.modelId)); put("kind", if (c.isFloodlightCamera) "floodlight" else "battery")
+                    put("motion", c.motion ?: false); put("motion_detection_enabled", c.motionEnabled ?: true); put("last_motion_update", JsonPrimitive(c.motionUpdated))
+                    put("lux", c.lux?.let { JsonPrimitive(it.roundToInt()) } ?: JsonNull); put("battery", c.batteryLevel?.let { JsonPrimitive(it) } ?: JsonNull)
+                    put("connectivity", JsonPrimitive(c.connectivity)); put("floodlight", c.floodlightLightId?.let { id -> JsonPrimitive(snap.light(id)?.name) } ?: JsonNull)
+                    put("note", "Live video is not available through the bridge API; only the Philips Hue app can show the stream.")
+                })
+            }
+        })
         put("sensors", buildJsonArray {
             for (a in snap.accessories) {
-                if (a.motionId != null) add(buildJsonObject { put("device", a.name); put("type", "motion"); put("value", a.motion ?: false); put("unit", "boolean"); put("updated", JsonPrimitive(a.motionUpdated)) })
+                if (a.motionId != null) add(buildJsonObject { put("device", a.name); put("type", if (a.isCamera) "camera_motion" else "motion"); put("value", a.motion ?: false); put("unit", "boolean"); put("updated", JsonPrimitive(a.motionUpdated)) })
                 a.temperatureC?.let { add(buildJsonObject { put("device", a.name); put("type", "temperature"); put("value", (it * 10).roundToInt() / 10.0); put("unit", "°C"); put("updated", JsonPrimitive(a.temperatureUpdated)) }) }
                 a.lux?.let { add(buildJsonObject { put("device", a.name); put("type", "light_level"); put("value", it.roundToInt()); put("unit", "lux"); put("updated", JsonPrimitive(a.lightLevelUpdated)) }) }
                 a.batteryLevel?.let { add(buildJsonObject { put("device", a.name); put("type", "battery"); put("value", it); put("unit", "%"); put("updated", JsonNull) }) }
@@ -485,8 +510,13 @@ class HueTools(private val repo: HueRepository) {
             sb.append('\n')
         }
         if (s.lightsWithoutRoom.isNotEmpty()) sb.append("- lights without room: ").append(s.lightsWithoutRoom.joinToString(", ") { it.name }).append('\n')
-        val sensors = s.accessories.filter { !it.isBridge }
+        val sensors = s.accessories.filter { !it.isBridge && !it.isCamera }
         if (sensors.isNotEmpty()) sb.append("- accessories: ").append(sensors.joinToString(", ") { "${it.name} (${it.kind})" }).append('\n')
+        if (s.cameras.isNotEmpty()) {
+            sb.append("- cameras (Hue Secure; motion/light/battery only, no video through the bridge): ")
+                .append(s.cameras.joinToString(", ") { c -> "${c.name} (${if (c.motion == true) "motion detected" else "clear"}${if (c.motionEnabled == false) ", detection paused" else ""}${c.batteryLevel?.let { ", battery $it%" } ?: ""})" })
+                .append('\n')
+        }
         return sb.toString()
     }
 

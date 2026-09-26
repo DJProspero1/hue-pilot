@@ -104,9 +104,13 @@ data class AccessoryUi(
     val batteryLevel: Int?,
     val batteryState: String?,
     val motionId: String?,
+    /** Resource type of the motion service: `motion` (sensor) or `camera_motion` (Hue Secure camera). */
+    val motionType: String? = null,
     val motion: Boolean?,
     val motionEnabled: Boolean?,
     val motionUpdated: String?,
+    /** Light id of the floodlight paired with this camera (floodlight cameras only). */
+    val floodlightLightId: String? = null,
     val temperatureId: String?,
     val temperatureC: Double?,
     val temperatureUpdated: String?,
@@ -117,9 +121,15 @@ data class AccessoryUi(
     val connectivity: String?,
 ) {
     val lux: Double? get() = lightLevelRaw?.let { 10.0.pow((it - 1) / 10000.0) }
+
+    /** Hue Secure cameras report motion through a `camera_motion` service; the product name is the fallback. */
+    val isCamera: Boolean
+        get() = motionType == "camera_motion" || productName?.contains("camera", ignoreCase = true) == true || modelId?.let { it.startsWith("CMB") || it.startsWith("CMW") } == true
+    val isFloodlightCamera: Boolean get() = isCamera && (modelId == "CMW002" || productName?.contains("floodlight", ignoreCase = true) == true)
     val kind: String
         get() = when {
             isBridge -> "bridge"
+            isCamera -> "camera"
             motionId != null -> "motion"
             buttons.isNotEmpty() -> "switch"
             else -> "other"
@@ -142,6 +152,11 @@ data class HomeSnapshot(
     val groups: List<GroupUi> get() = rooms + zones
     val lightsOn: Int get() = lights.count { it.on }
     val isEmpty: Boolean get() = resourceCount == 0
+    val cameras: List<AccessoryUi> get() = accessories.filter { it.kind == "camera" }
+    val motionSensors: List<AccessoryUi> get() = accessories.filter { it.kind == "motion" }
+    val switches: List<AccessoryUi> get() = accessories.filter { it.kind == "switch" }
+    /** Colours of every light that is on, most common first (used for the "all lights" ambient card). */
+    val litHexes: List<String> get() = lights.filter { it.on }.groupingBy { it.swatchHex }.eachCount().entries.sortedByDescending { it.value }.map { it.key }
     fun group(id: String): GroupUi? = groups.firstOrNull { it.id == id }
     fun light(id: String): LightUi? = lights.firstOrNull { it.id == id }
     fun scene(id: String): SceneUi? = scenes.firstOrNull { it.id == id }
@@ -164,6 +179,7 @@ object SnapshotBuilder {
         val scenes = LinkedHashMap<String, Scene>()
         val devices = LinkedHashMap<String, Device>()
         val motions = LinkedHashMap<String, Motion>()
+        val motionTypes = HashMap<String, String>()
         val lightLevels = LinkedHashMap<String, LightLevel>()
         val temperatures = LinkedHashMap<String, Temperature>()
         val powers = LinkedHashMap<String, DevicePower>()
@@ -180,7 +196,7 @@ object SnapshotBuilder {
                 "grouped_light" -> decode(obj, GroupedLight.serializer())?.let { groupedLights[id] = it }
                 "scene" -> decode(obj, Scene.serializer())?.let { scenes[id] = it }
                 "device" -> decode(obj, Device.serializer())?.let { devices[id] = it }
-                "motion", "camera_motion" -> decode(obj, Motion.serializer())?.let { motions[id] = it }
+                "motion", "camera_motion" -> decode(obj, Motion.serializer())?.let { motions[id] = it; motionTypes[id] = typeOf(obj) ?: "motion" }
                 "light_level" -> decode(obj, LightLevel.serializer())?.let { lightLevels[id] = it }
                 "temperature" -> decode(obj, Temperature.serializer())?.let { temperatures[id] = it }
                 "device_power" -> decode(obj, DevicePower.serializer())?.let { powers[id] = it }
@@ -326,6 +342,22 @@ object SnapshotBuilder {
         val powerByDevice = powers.values.associateBy { it.owner?.rid }
         val buttonsByDevice = buttons.values.groupBy { it.owner?.rid }
         val bridgeDeviceId = bridge?.owner?.rid
+        // Floodlight cameras expose their light as a separate device (archetype hue_floodlight_camera).
+        val floodlightLights = lightUis.values.filter { it.archetype == "hue_floodlight_camera" }
+        val floodlightCameras = devices.values.filter { d -> d.services.none { it.rtype == "light" } && (d.productData?.modelId == "CMW002" || d.productData?.productName?.contains("floodlight", true) == true) }
+        val floodlightByCamera = HashMap<String, String>()
+        if (floodlightLights.size == 1 && floodlightCameras.size == 1) {
+            floodlightByCamera[floodlightCameras[0].id] = floodlightLights[0].id
+        } else if (floodlightLights.isNotEmpty() && floodlightCameras.isNotEmpty()) {
+            fun norm(s: String?) = (s ?: "").lowercase().replace(Regex("[^a-z]"), "")
+            val free = floodlightLights.toMutableList()
+            for (cam in floodlightCameras) {
+                val camName = norm(cam.metadata?.name)
+                val best = free.maxByOrNull { l -> l.name.let { n -> norm(n).commonPrefixWith(camName).length } } ?: break
+                floodlightByCamera[cam.id] = best.id
+                free.remove(best)
+            }
+        }
         val accessories = devices.values.filter { d ->
             d.services.none { it.rtype == "light" } || d.id == bridgeDeviceId
         }.map { d ->
@@ -345,9 +377,11 @@ object SnapshotBuilder {
                 batteryLevel = p?.powerState?.batteryLevel,
                 batteryState = p?.powerState?.batteryState,
                 motionId = m?.id,
+                motionType = m?.id?.let { motionTypes[it] },
                 motion = m?.motion?.report?.motion ?: m?.motion?.motion,
                 motionEnabled = m?.enabled,
                 motionUpdated = m?.motion?.report?.changed,
+                floodlightLightId = floodlightByCamera[d.id],
                 temperatureId = t?.id,
                 temperatureC = t?.temperature?.report?.temperature ?: t?.temperature?.temperature,
                 temperatureUpdated = t?.temperature?.report?.changed,

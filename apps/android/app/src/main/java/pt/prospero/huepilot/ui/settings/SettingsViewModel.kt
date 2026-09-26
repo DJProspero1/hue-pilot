@@ -51,6 +51,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     fun setTheme(mode: ThemeMode) = viewModelScope.launch { container.settings.setTheme(mode) }
+    fun setWallpaperColors(on: Boolean) = viewModelScope.launch { container.settings.setWallpaperColors(on) }
     fun setTransitionMs(ms: Int) = viewModelScope.launch { container.settings.setTransitionMs(ms) }
     fun setSpeakReplies(on: Boolean) = viewModelScope.launch { container.settings.setSpeakReplies(on) }
     fun forgetBridge() = viewModelScope.launch { container.repository.disconnect(); container.settings.forgetBridge() }

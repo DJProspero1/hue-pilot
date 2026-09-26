@@ -293,8 +293,9 @@ class HueRepository(private val scope: CoroutineScope) {
 
     // ---- accessories ----
 
-    suspend fun setMotionEnabled(motionId: String, enabled: Boolean) =
-        put("motion", motionId, buildJsonObject { put("enabled", enabled) }, 0)
+    /** Enables/disables motion detection on a motion sensor (`motion`) or a Hue Secure camera (`camera_motion`). */
+    suspend fun setMotionEnabled(motionId: String, enabled: Boolean, type: String = "motion") =
+        put(if (type == "camera_motion") "camera_motion" else "motion", motionId, buildJsonObject { put("enabled", enabled) }, 0)
 
     suspend fun renameDevice(deviceId: String, name: String) =
         put("device", deviceId, buildJsonObject { putJsonObject("metadata") { put("name", name.trim()) } }, 0)
