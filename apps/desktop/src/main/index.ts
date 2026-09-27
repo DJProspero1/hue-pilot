@@ -28,7 +28,7 @@ import { LocalApi } from './http-api.ts';
 import { buildSnippets, detectInstalled, findNode, installAgent, mcpScriptPath } from './agents.ts';
 import { PhoneMirror } from './phone-mirror.ts';
 import { HueCloud, HUE_AUDIENCE } from './hue-cloud.ts';
-import { signInWithHueAccount, startBrowserSignIn, stopClipboardWatcher } from './cloud-login.ts';
+import { cancelActiveBrowserLogin, findChromiumBrowser, signInWithHueAccount, signInWithSystemBrowser, startClipboardSignIn, stopClipboardWatcher } from './cloud-login.ts';
 import type { AgentInfo, ChatMessage, CreateSceneInput, HueApi, PairTarget, ScheduleSpec, ScheduleView, Settings } from '../shared/ipc-types.ts';
 
 app.setName('Hue Pilot');
@@ -64,7 +64,8 @@ cloud.on('status', (s) => broadcast('hue:cloud-status', s));
  * older community project) is rejected with "Service not found". If the account API later refuses
  * the token (401), the next audience is tried — the Auth0 session cookie makes that instant.
  */
-const CLOUD_AUDIENCES: (string | null)[] = ['https://account.meethue.com', null, HUE_AUDIENCE];
+// The Hue account site itself requests no audience (default), so that goes first.
+const CLOUD_AUDIENCES: (string | null)[] = [null, 'https://account.meethue.com', HUE_AUDIENCE];
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
@@ -531,8 +532,15 @@ const handlers: Handlers = {
   },
   getCloudStatus: async () => cloud.status(),
   cloudSignIn: async (mode?: 'browser' | 'window') => {
-    if (mode === 'window') return signInWithHueAccount(cloud, win, CLOUD_AUDIENCES, (line) => cloud.emit('log', line));
-    return startBrowserSignIn(cloud, CLOUD_AUDIENCES, cloud.audienceAttempt, (line) => cloud.emit('log', line));
+    const log = (line: string) => cloud.emit('log', line);
+    if (mode === 'window') return signInWithHueAccount(cloud, win, CLOUD_AUDIENCES, log);
+    const audience = CLOUD_AUDIENCES[Math.min(cloud.audienceAttempt, CLOUD_AUDIENCES.length - 1)] ?? null;
+    const browser = await findChromiumBrowser();
+    if (!browser) {
+      log('No Edge/Chrome/Brave found; falling back to the default browser and the clipboard.');
+      return startClipboardSignIn(cloud, audience, log);
+    }
+    return signInWithSystemBrowser(cloud, browser, audience, path.join(app.getPath('userData'), 'hue-login-browser'), log);
   },
   cloudFinishSignIn: async (text: string) => {
     const status = await cloud.finishBrowserLogin(text);
@@ -542,8 +550,11 @@ const handlers: Handlers = {
   },
   cloudCancelSignIn: async () => {
     stopClipboardWatcher();
+    cancelActiveBrowserLogin();
     return cloud.cancelBrowserLogin();
   },
+  cloudSetPassphrase: async (passphrase: string) => cloud.setPassphrase(passphrase),
+  cloudSignOffer: async (sdp: string) => cloud.signOffer(sdp),
   cloudSignOut: async () => cloud.signOut(),
   cloudRefresh: () => cloud.discover(),
   cloudSetHome: (homeId: string) => cloud.setHome(homeId),

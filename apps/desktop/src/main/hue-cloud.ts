@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AwsCredentials, IceServer } from './kvs-signaling.ts';
 import { getIceServerConfig, getSignalingChannelEndpoints, normalizeIceServers, presignWebSocketUrl } from './kvs-signaling.ts';
+import { offerSignatureVariants, type OfferSignatureVariant } from './hue-e2ee.ts';
 import type { CloudCamera, CloudHome, CloudStatus, LiveViewSession } from '../shared/ipc-types.ts';
 
 /**
@@ -105,12 +106,14 @@ export function extractAuthCode(text: string, expectedState?: string): { code: s
   return { code: null, state: null, error: null };
 }
 
-/** A sign-in started in the system browser, waiting for the user to bring the code back. */
+/** A sign-in started in the system browser, waiting for the code to come back. */
 export interface PendingLogin {
   verifier: string;
   state: string;
   audience: string | null;
   startedAt: number;
+  /** `browser`: observed through DevTools; `clipboard`: the user copies the address. */
+  method: 'browser' | 'clipboard';
 }
 
 export function jwtExpiry(token: string): number {
@@ -228,13 +231,29 @@ export class HueCloud extends EventEmitter {
   audienceAttempt = 0;
 
   /** Starts a system-browser sign-in: remembers the PKCE verifier and returns the URL to open. */
-  beginBrowserLogin(audience: string | null): string {
+  beginBrowserLogin(audience: string | null, responseMode: 'query' | 'fragment' = 'query', method: PendingLogin['method'] = 'browser'): string {
     const { verifier, challenge } = pkcePair();
     const state = randomBytes(12).toString('base64url');
-    this.pending = { verifier, state, audience, startedAt: Date.now() };
+    this.pending = { verifier, state, audience, startedAt: Date.now(), method };
     this.lastError = null;
     this.emitStatus();
-    return buildAuthorizeUrl(challenge, state, audience, 'fragment');
+    return buildAuthorizeUrl(challenge, state, audience, responseMode);
+  }
+
+  /** The home's E2EE passphrase (10 words from the Hue app), kept encrypted with the session. */
+  private passphrase: string | null = null;
+
+  setPassphrase(p: string | null): CloudStatus {
+    this.passphrase = p && p.trim() ? p : null;
+    this.save();
+    this.emitStatus();
+    return this.status();
+  }
+
+  /** Candidate signed-offer payload fields for [sdp]; empty without a passphrase. */
+  signOffer(sdp: string): OfferSignatureVariant[] {
+    if (!this.passphrase) return [];
+    return offerSignatureVariants(sdp, this.passphrase, this.homeId);
   }
 
   cancelBrowserLogin(): CloudStatus {
@@ -251,7 +270,7 @@ export class HueCloud extends EventEmitter {
     const p = this.pending;
     if (!p) throw new Error('No sign-in is waiting. Click "Sign in with your browser" first.');
     const { code, error, state } = extractAuthCode(text, p.state);
-    if (error === 'state mismatch') throw new Error('That address belongs to an older sign-in attempt. Click "Sign in with your browser" again and copy the new address.');
+    if (error === 'state mismatch') throw new Error('That address comes from the Hue account site\'s own sign-in (it starts one by itself), not from Hue Pilot\'s. Use "Sign in with your browser", which captures the result automatically.');
     if (error) throw new Error(`Sign-in failed: ${error}`);
     if (!code) return null;
     if (state && state !== p.state) return null;
@@ -275,18 +294,19 @@ export class HueCloud extends EventEmitter {
       if (!fs.existsSync(this.opts.file)) return;
       const raw = fs.readFileSync(this.opts.file, 'utf8');
       const json = this.opts.decrypt ? this.opts.decrypt(raw) : raw;
-      const parsed = JSON.parse(json) as { tokens?: StoredTokens; homeId?: string | null; homes?: CloudHome[]; cameras?: CloudCamera[] };
+      const parsed = JSON.parse(json) as { tokens?: StoredTokens; homeId?: string | null; homes?: CloudHome[]; cameras?: CloudCamera[]; passphrase?: string | null };
       this.tokens = parsed.tokens ?? null;
       this.homeId = parsed.homeId ?? null;
       this.homes = parsed.homes ?? [];
       this.cameras = parsed.cameras ?? [];
+      this.passphrase = parsed.passphrase ?? null;
     } catch (err) {
       this.lastError = `Could not read saved Hue account session: ${(err as Error).message}`;
     }
   }
 
   private save() {
-    const json = JSON.stringify({ tokens: this.tokens, homeId: this.homeId, homes: this.homes, cameras: this.cameras });
+    const json = JSON.stringify({ tokens: this.tokens, homeId: this.homeId, homes: this.homes, cameras: this.cameras, passphrase: this.passphrase });
     fs.mkdirSync(path.dirname(this.opts.file), { recursive: true });
     fs.writeFileSync(this.opts.file, this.opts.encrypt ? this.opts.encrypt(json) : json, 'utf8');
   }
@@ -301,7 +321,8 @@ export class HueCloud extends EventEmitter {
       tokenExpiresAt: this.tokens?.expiresAt ?? null,
       canRefresh: !!this.tokens?.refreshToken,
       error: this.lastError,
-      pendingLogin: this.pending ? { startedAt: this.pending.startedAt } : null,
+      pendingLogin: this.pending ? { startedAt: this.pending.startedAt, method: this.pending.method } : null,
+      hasPassphrase: !!this.passphrase,
     };
   }
 
@@ -355,6 +376,8 @@ export class HueCloud extends EventEmitter {
     this.cameras = [];
     this.homeId = null;
     this.lastError = null;
+    this.passphrase = null;
+    this.pending = null;
     try {
       fs.rmSync(this.opts.file, { force: true });
     } catch {

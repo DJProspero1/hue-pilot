@@ -181,6 +181,10 @@ export interface HueApi {
   /** Completes a browser sign-in from the pasted redirect address (or bare code). */
   cloudFinishSignIn(text: string): Promise<CloudStatus>;
   cloudCancelSignIn(): Promise<CloudStatus>;
+  /** Stores (or clears, with an empty string) the home's E2EE passphrase from the Hue app. */
+  cloudSetPassphrase(passphrase: string): Promise<CloudStatus>;
+  /** Signed-offer variants for an SDP offer (empty without a passphrase). */
+  cloudSignOffer(sdp: string): Promise<{ name: string; fields: Record<string, string> }[]>;
   cloudSignOut(): Promise<CloudStatus>;
   cloudRefresh(): Promise<CloudStatus>;
   cloudSetHome(homeId: string): Promise<CloudStatus>;
@@ -262,8 +266,9 @@ export interface CloudStatus {
   tokenExpiresAt: number | null;
   canRefresh: boolean;
   error: string | null;
-  /** A system-browser sign-in is waiting for the redirect address. */
-  pendingLogin: { startedAt: number } | null;
+  /** A system-browser sign-in is waiting for the redirect. */
+  pendingLogin: { startedAt: number; method: 'browser' | 'clipboard' } | null;
+  hasPassphrase: boolean;
 }
 
 /** Everything the renderer needs to open a WebRTC live-view session through Kinesis signaling. */
