@@ -80,6 +80,14 @@ test('extractAuthCode only accepts the account.meethue.com redirect and checks s
   assert.equal(extractAuthCode('https://account.meethue.com/?code=abc&state=other', 'st').error, 'state mismatch');
   assert.equal(extractAuthCode('https://auth.meethue.com/u/login?state=x').code, null);
   assert.equal(extractAuthCode('https://account.meethue.com/?error=access_denied&error_description=Denied').error, 'Denied');
+  // System-browser flow: code in the fragment, pasted with whitespace, or bare.
+  assert.deepEqual(extractAuthCode('  https://account.meethue.com/#code=xyz_123&state=st \n', 'st'), { code: 'xyz_123', state: 'st', error: null });
+  assert.deepEqual(extractAuthCode('code=q1&state=st', 'st'), { code: 'q1', state: 'st', error: null });
+  assert.equal(extractAuthCode('Ab12CD34ef56').code, 'Ab12CD34ef56');
+  assert.equal(extractAuthCode('hello world').code, null);
+  const url = new URL(buildAuthorizeUrl('ch', 'st', 'https://account.meethue.com', 'fragment'));
+  assert.equal(url.searchParams.get('response_mode'), 'fragment');
+  assert.equal(url.searchParams.get('audience'), 'https://account.meethue.com');
 });
 
 test('pickHomes and pickCameras tolerate several response shapes', () => {

@@ -1,6 +1,6 @@
-import { Cloud, Copy, LogOut, RefreshCw, Video, X } from 'lucide-react';
+import { Cloud, Copy, Loader2, LogOut, RefreshCw, Video, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { Button, Card, cx, Select } from '../components/ui';
+import { Button, Card, cx, Input, Select } from '../components/ui';
 import type { CloudCamera, CloudStatus, LiveViewSession } from '../../../shared/ipc-types.ts';
 
 const b64 = (s: string) => btoa(unescape(encodeURIComponent(s)));
@@ -169,6 +169,7 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [showLog, setShowLog] = useState(false);
+  const [pasted, setPasted] = useState('');
 
   const addLog = (line: string) => setLog((l) => [...l.slice(-199), `${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}  ${line}`]);
 
@@ -227,12 +228,35 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
       </div>
 
       {!status?.signedIn ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Button variant="primary" icon={<Cloud size={14} />} loading={busy === 'signin' || status?.busy} onClick={() => run('signin', () => window.hue.cloudSignIn())}>
-            Sign in with your Hue account
-          </Button>
-          <span className="text-xs text-muted">Opens Signify's own sign-in page in a window; Hue Pilot only receives a session token, never your password.</span>
-        </div>
+        status?.pendingLogin ? (
+          <div className="mt-3 rounded-xl surface-2 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <Loader2 size={14} className="spin" /> Finish signing in in your browser
+            </div>
+            <ol className="mt-2 list-decimal pl-5 space-y-1 text-muted">
+              <li>Complete the sign-in in the browser window that just opened (Google, Apple or email).</li>
+              <li>It ends on the Hue account page. Copy the address from the address bar: click it, press <span className="font-medium text-[var(--fg)]">Ctrl+L</span> then <span className="font-medium text-[var(--fg)]">Ctrl+C</span>. Hue Pilot notices the copied address and finishes automatically.</li>
+              <li>If nothing happens, paste the address here:</li>
+            </ol>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Input value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="https://account.meethue.com/#code=…" className="flex-1 min-w-[280px]" />
+              <Button variant="primary" size="sm" loading={busy === 'finish' || status.busy} disabled={!pasted.trim()} onClick={() => run('finish', async () => { await window.hue.cloudFinishSignIn(pasted); setPasted(''); })}>
+                Finish sign-in
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => run('cancel', () => window.hue.cloudCancelSignIn())}>Cancel</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button variant="primary" icon={<Cloud size={14} />} loading={busy === 'signin' || status?.busy} onClick={() => run('signin', () => window.hue.cloudSignIn('browser'))}>
+              Sign in with your browser
+            </Button>
+            <Button variant="outline" loading={busy === 'signin-window'} onClick={() => run('signin-window', () => window.hue.cloudSignIn('window'))}>
+              Sign in in a window
+            </Button>
+            <span className="text-xs text-muted basis-full">Use your browser for Google or Apple accounts (they refuse embedded windows). Signify's own sign-in page is used; Hue Pilot only receives a session token, never your password.</span>
+          </div>
+        )
       ) : (
         <>
           <div className="mt-3 flex flex-wrap items-center gap-2">

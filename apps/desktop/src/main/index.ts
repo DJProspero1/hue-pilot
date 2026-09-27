@@ -28,7 +28,7 @@ import { LocalApi } from './http-api.ts';
 import { buildSnippets, detectInstalled, findNode, installAgent, mcpScriptPath } from './agents.ts';
 import { PhoneMirror } from './phone-mirror.ts';
 import { HueCloud, HUE_AUDIENCE } from './hue-cloud.ts';
-import { signInWithHueAccount } from './cloud-login.ts';
+import { signInWithHueAccount, startBrowserSignIn, stopClipboardWatcher } from './cloud-login.ts';
 import type { AgentInfo, ChatMessage, CreateSceneInput, HueApi, PairTarget, ScheduleSpec, ScheduleView, Settings } from '../shared/ipc-types.ts';
 
 app.setName('Hue Pilot');
@@ -530,7 +530,20 @@ const handlers: Handlers = {
     return next;
   },
   getCloudStatus: async () => cloud.status(),
-  cloudSignIn: () => signInWithHueAccount(cloud, win, CLOUD_AUDIENCES, (line) => cloud.emit('log', line)),
+  cloudSignIn: async (mode?: 'browser' | 'window') => {
+    if (mode === 'window') return signInWithHueAccount(cloud, win, CLOUD_AUDIENCES, (line) => cloud.emit('log', line));
+    return startBrowserSignIn(cloud, CLOUD_AUDIENCES, cloud.audienceAttempt, (line) => cloud.emit('log', line));
+  },
+  cloudFinishSignIn: async (text: string) => {
+    const status = await cloud.finishBrowserLogin(text);
+    if (!status) throw new Error('That does not look like the address from the Hue account page (it should contain "code=").');
+    stopClipboardWatcher();
+    return status;
+  },
+  cloudCancelSignIn: async () => {
+    stopClipboardWatcher();
+    return cloud.cancelBrowserLogin();
+  },
   cloudSignOut: async () => cloud.signOut(),
   cloudRefresh: () => cloud.discover(),
   cloudSetHome: (homeId: string) => cloud.setHome(homeId),

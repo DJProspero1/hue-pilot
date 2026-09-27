@@ -1,7 +1,53 @@
 import { randomBytes } from 'node:crypto';
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, clipboard, shell } from 'electron';
 import { buildAuthorizeUrl, extractAuthCode, HUE_REDIRECT_URI, pkcePair, type HueCloud } from './hue-cloud.ts';
 import type { CloudStatus } from '../shared/ipc-types.ts';
+
+let clipboardWatcher: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Sign-in in the user's default browser. Google (and Apple) refuse to sign in inside embedded
+ * windows, so the authorize URL opens externally; Signify only allows account.meethue.com as the
+ * redirect, which a browser cannot hand back to a desktop app. The code is therefore requested in
+ * the URL fragment (the account site ignores it, so it stays in the address bar) and the user copies
+ * the address: a clipboard watcher completes the sign-in the moment it sees it, and the renderer
+ * also offers a paste box. The next audience in [audiences] is used after a rejected token.
+ */
+export function startBrowserSignIn(cloud: HueCloud, audiences: (string | null)[], attempt: number, log: (line: string) => void): CloudStatus {
+  stopClipboardWatcher();
+  const audience = audiences[Math.min(attempt, audiences.length - 1)] ?? null;
+  const url = cloud.beginBrowserLogin(audience);
+  log(`Opening the Hue sign-in page in your browser (audience: ${audience ?? 'default'}).`);
+  void shell.openExternal(url);
+  const startedAt = Date.now();
+  let lastSeen = '';
+  let checking = false;
+  clipboardWatcher = setInterval(() => {
+    if (!cloud.pending || Date.now() - startedAt > 15 * 60_000) return stopClipboardWatcher();
+    if (checking) return;
+    checking = true;
+    void (async () => {
+      try {
+        const text = String(await clipboard.readText());
+        if (!text || text === lastSeen || !/code=/.test(text) || !text.includes('account.meethue.com')) return;
+        lastSeen = text;
+        log('Sign-in address found on the clipboard; finishing sign-in.');
+        const s = await cloud.finishBrowserLogin(text);
+        if (s) stopClipboardWatcher();
+      } catch (err) {
+        log(`Clipboard sign-in failed: ${(err as Error).message}`);
+      } finally {
+        checking = false;
+      }
+    })();
+  }, 600);
+  return cloud.status();
+}
+
+export function stopClipboardWatcher() {
+  if (clipboardWatcher) clearInterval(clipboardWatcher);
+  clipboardWatcher = null;
+}
 
 /**
  * Interactive Hue account sign-in in an Electron window (OAuth 2 authorization code + PKCE, the

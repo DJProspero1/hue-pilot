@@ -172,8 +172,15 @@ export interface HueApi {
 
   // Hue account / cloud live view (experimental)
   getCloudStatus(): Promise<CloudStatus>;
-  /** Opens the Hue sign-in window; resolves when the login completes or is cancelled. */
-  cloudSignIn(): Promise<CloudStatus>;
+  /**
+   * `browser` (default): opens the Hue sign-in page in the system browser and waits for the redirect
+   * address (clipboard or `cloudFinishSignIn`). `window`: embedded sign-in window (email/password
+   * accounts only; Google/Apple refuse embedded windows).
+   */
+  cloudSignIn(mode?: 'browser' | 'window'): Promise<CloudStatus>;
+  /** Completes a browser sign-in from the pasted redirect address (or bare code). */
+  cloudFinishSignIn(text: string): Promise<CloudStatus>;
+  cloudCancelSignIn(): Promise<CloudStatus>;
   cloudSignOut(): Promise<CloudStatus>;
   cloudRefresh(): Promise<CloudStatus>;
   cloudSetHome(homeId: string): Promise<CloudStatus>;
@@ -255,6 +262,8 @@ export interface CloudStatus {
   tokenExpiresAt: number | null;
   canRefresh: boolean;
   error: string | null;
+  /** A system-browser sign-in is waiting for the redirect address. */
+  pendingLogin: { startedAt: number } | null;
 }
 
 /** Everything the renderer needs to open a WebRTC live-view session through Kinesis signaling. */

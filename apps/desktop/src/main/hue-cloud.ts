@@ -49,7 +49,12 @@ export function pkcePair(): PkcePair {
   return { verifier, challenge };
 }
 
-export function buildAuthorizeUrl(challenge: string, state: string, audience: string | null = HUE_AUDIENCE): string {
+/**
+ * @param responseMode `fragment` puts the code in the URL hash. The Hue account site only consumes
+ *   codes found in the query string, so with `fragment` the address bar keeps
+ *   `https://account.meethue.com/#code=…&state=…` and the user can copy it (system-browser sign-in).
+ */
+export function buildAuthorizeUrl(challenge: string, state: string, audience: string | null = HUE_AUDIENCE, responseMode: 'query' | 'fragment' = 'query'): string {
   const params = new URLSearchParams({
     client_id: HUE_CLIENT_ID,
     redirect_uri: HUE_REDIRECT_URI,
@@ -60,22 +65,52 @@ export function buildAuthorizeUrl(challenge: string, state: string, audience: st
     state,
   });
   if (audience) params.set('audience', audience);
+  if (responseMode === 'fragment') params.set('response_mode', 'fragment');
   return `https://${HUE_AUTH_DOMAIN}/authorize?${params.toString()}`;
 }
 
-/** Returns the authorization code when [url] is the redirect back to account.meethue.com. */
-export function extractAuthCode(url: string, expectedState?: string): { code: string | null; state: string | null; error: string | null } {
-  try {
-    const u = new URL(url);
-    if (!u.href.startsWith(HUE_REDIRECT_URI.replace(/\/$/, ''))) return { code: null, state: null, error: null };
-    const code = u.searchParams.get('code');
-    const state = u.searchParams.get('state');
-    const error = u.searchParams.get('error_description') ?? u.searchParams.get('error');
-    if (expectedState && state && state !== expectedState) return { code: null, state, error: 'state mismatch' };
-    return { code, state, error };
-  } catch {
-    return { code: null, state: null, error: null };
+/**
+ * Returns the authorization code when [text] is the redirect back to account.meethue.com
+ * (query or fragment form, possibly pasted with surrounding whitespace) or a bare pasted code.
+ */
+export function extractAuthCode(text: string, expectedState?: string): { code: string | null; state: string | null; error: string | null } {
+  const raw = text.trim();
+  if (!raw) return { code: null, state: null, error: null };
+  const base = HUE_REDIRECT_URI.replace(/\/$/, '');
+  const fromUrl = raw.match(/https?:\/\/\S+/)?.[0] ?? null;
+  if (fromUrl) {
+    try {
+      const u = new URL(fromUrl);
+      if (!u.href.startsWith(base)) return { code: null, state: null, error: null };
+      const params = new URLSearchParams(u.search);
+      const hash = new URLSearchParams(u.hash.replace(/^#/, ''));
+      const get = (k: string) => params.get(k) ?? hash.get(k);
+      const code = get('code');
+      const state = get('state');
+      const error = get('error_description') ?? get('error');
+      if (expectedState && state && state !== expectedState) return { code: null, state, error: 'state mismatch' };
+      return { code, state, error };
+    } catch {
+      return { code: null, state: null, error: null };
+    }
   }
+  // Bare parameters ("code=…&state=…") or a bare code.
+  if (/^[A-Za-z0-9_-]{8,}$/.test(raw)) return { code: raw, state: null, error: null };
+  if (/(^|[?#&])code=/.test(raw)) {
+    const p = new URLSearchParams(raw.replace(/^[?#]/, ''));
+    const state = p.get('state');
+    if (expectedState && state && state !== expectedState) return { code: null, state, error: 'state mismatch' };
+    return { code: p.get('code'), state, error: p.get('error_description') ?? p.get('error') };
+  }
+  return { code: null, state: null, error: null };
+}
+
+/** A sign-in started in the system browser, waiting for the user to bring the code back. */
+export interface PendingLogin {
+  verifier: string;
+  state: string;
+  audience: string | null;
+  startedAt: number;
 }
 
 export function jwtExpiry(token: string): number {
@@ -187,6 +222,42 @@ export class HueCloud extends EventEmitter {
 
   /** Set when the account API answered 401/403 with a freshly obtained token (wrong audience). */
   authRejected = false;
+  /** Sign-in started in the system browser and not finished yet. */
+  pending: PendingLogin | null = null;
+  /** Index into the audience candidates for the next sign-in (advanced after a rejected token). */
+  audienceAttempt = 0;
+
+  /** Starts a system-browser sign-in: remembers the PKCE verifier and returns the URL to open. */
+  beginBrowserLogin(audience: string | null): string {
+    const { verifier, challenge } = pkcePair();
+    const state = randomBytes(12).toString('base64url');
+    this.pending = { verifier, state, audience, startedAt: Date.now() };
+    this.lastError = null;
+    this.emitStatus();
+    return buildAuthorizeUrl(challenge, state, audience, 'fragment');
+  }
+
+  cancelBrowserLogin(): CloudStatus {
+    this.pending = null;
+    this.emitStatus();
+    return this.status();
+  }
+
+  /**
+   * Finishes a system-browser sign-in from the pasted (or clipboard-detected) redirect address.
+   * Returns null when [text] is not a usable redirect for the pending login.
+   */
+  async finishBrowserLogin(text: string): Promise<CloudStatus | null> {
+    const p = this.pending;
+    if (!p) throw new Error('No sign-in is waiting. Click "Sign in with your browser" first.');
+    const { code, error, state } = extractAuthCode(text, p.state);
+    if (error === 'state mismatch') throw new Error('That address belongs to an older sign-in attempt. Click "Sign in with your browser" again and copy the new address.');
+    if (error) throw new Error(`Sign-in failed: ${error}`);
+    if (!code) return null;
+    if (state && state !== p.state) return null;
+    this.pending = null;
+    return this.completeLogin(code, p.verifier);
+  }
 
   constructor(opts: HueCloudOptions) {
     super();
@@ -230,6 +301,7 @@ export class HueCloud extends EventEmitter {
       tokenExpiresAt: this.tokens?.expiresAt ?? null,
       canRefresh: !!this.tokens?.refreshToken,
       error: this.lastError,
+      pendingLogin: this.pending ? { startedAt: this.pending.startedAt } : null,
     };
   }
 
@@ -250,6 +322,10 @@ export class HueCloud extends EventEmitter {
       this.setTokens(data);
       this.log('Signed in to the Hue account.');
       await this.discover();
+      if (this.authRejected) {
+        this.audienceAttempt += 1;
+        this.log('The account API rejected this token; the next sign-in will request a different audience.');
+      }
     } catch (err) {
       this.lastError = (err as Error).message;
       this.log(`Login failed: ${this.lastError}`);
