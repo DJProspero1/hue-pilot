@@ -18,17 +18,23 @@ interface PlayerStats {
 }
 
 const ANSWER_TIMEOUT_MS = 15_000;
+/** How long to wait for the camera's own SDP offer before sending ours. */
+const CAMERA_OFFER_WAIT_MS = 12_000;
 
 /**
  * WebRTC viewer: Kinesis signaling over the pre-signed WebSocket, then DTLS-SRTP from the camera.
  * Attempt 0 sends a plain offer. If the camera never answers (live view protection on) and a
  * passphrase is stored, the signed-offer variants from the main process are tried one by one.
  */
-function LiveViewPlayer({ session, onLog, onClose }: { session: LiveViewSession; onLog: (line: string) => void; onClose: () => void }) {
+function LiveViewPlayer({ session, protectedHint, onLog, onClose }: { session: LiveViewSession; protectedHint: boolean | null; onLog: (line: string) => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [stats, setStats] = useState<PlayerStats>({ state: 'new', ice: 'new', width: 0, height: 0, fps: 0, kbps: 0, framesDecoded: 0, attempt: 'plain offer' });
   const [muted, setMuted] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The parent re-renders on every log line and passes fresh callbacks; keep them in refs so the
+  // effect below runs once per session (otherwise each log line restarted the whole attempt).
+  const onLogRef = useRef(onLog);
+  onLogRef.current = onLog;
 
   useEffect(() => {
     let closed = false;
@@ -37,7 +43,7 @@ function LiveViewPlayer({ session, onLog, onClose }: { session: LiveViewSession;
     let lastBytes = 0;
     let lastFrames = 0;
     let lastAt = Date.now();
-    const log = (l: string) => !closed && onLog(l);
+    const log = (l: string) => !closed && onLogRef.current(l);
 
     const teardown = () => {
       if (!current) return;
@@ -90,11 +96,23 @@ function LiveViewPlayer({ session, onLog, onClose }: { session: LiveViewSession;
           }
         };
         pc.oniceconnectionstatechange = () => setStats((s) => ({ ...s, ice: pc.iceConnectionState }));
+        // Hue cameras act as the WebRTC offerer: once a viewer is on the channel the camera sends
+        // SDP_OFFER and expects SDP_ANSWER back. We wait for that first; if nothing comes we fall
+        // back to sending our own offer (plain, then the signed variants).
+        let cameraId: string | null = null;
+        let ourOfferSent = false;
+        let remoteSet = false;
+        const pendingCandidates: RTCIceCandidateInit[] = [];
+        let emptyFrames = 0;
         const answerTimer = setTimeout(() => {
           if (!pc.remoteDescription) done('timeout');
-        }, ANSWER_TIMEOUT_MS);
-        ws.onopen = async () => {
-          log(index === 0 ? 'Signaling channel open; sending a plain SDP offer to the camera.' : `Signaling channel open; sending a signed SDP offer (${variantName}).`);
+        }, CAMERA_OFFER_WAIT_MS + ANSWER_TIMEOUT_MS);
+        let offerTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const sendOurOffer = async () => {
+          if (ourOfferSent || settled || pc.signalingState !== 'stable') return;
+          ourOfferSent = true;
+          log(index === 0 ? `No offer from the camera within ${CAMERA_OFFER_WAIT_MS / 1000} s; sending a plain SDP offer instead.` : `Sending a signed SDP offer (${variantName}).`);
           try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
@@ -110,54 +128,106 @@ function LiveViewPlayer({ session, onLog, onClose }: { session: LiveViewSession;
             done('failed');
           }
         };
+        const flushCandidates = async () => {
+          while (pendingCandidates.length) {
+            const c = pendingCandidates.shift()!;
+            await pc.addIceCandidate(c).catch((err) => log(`ICE candidate rejected: ${(err as Error).message}`));
+          }
+        };
+
+        ws.onopen = () => {
+          log(`Signaling channel open as viewer ${session.clientId}; waiting for the camera's SDP offer…`);
+          offerTimer = setTimeout(() => void sendOurOffer(), index === 0 ? CAMERA_OFFER_WAIT_MS : 1500);
+        };
         ws.onmessage = async (ev) => {
+          const raw = typeof ev.data === 'string' ? ev.data : '';
+          if (!raw.trim()) {
+            // Kinesis sends empty frames (e.g. acknowledgements); they carry nothing.
+            emptyFrames += 1;
+            if (emptyFrames === 1) log('Signaling: empty frame(s) from Kinesis (ignored).');
+            return;
+          }
           try {
-            const msg = JSON.parse(String(ev.data)) as { messageType?: string; messagePayload?: string; senderClientId?: string; statusResponse?: unknown };
+            const msg = JSON.parse(raw) as { messageType?: string; action?: string; messagePayload?: string; senderClientId?: string; statusResponse?: unknown };
             if (msg.statusResponse) {
               log(`Signaling status: ${JSON.stringify(msg.statusResponse).slice(0, 200)}`);
               return;
             }
-            const payload = msg.messagePayload ? (JSON.parse(unb64(msg.messagePayload)) as Record<string, unknown>) : null;
-            if (!payload) return;
-            if (msg.messageType === 'SDP_ANSWER') {
+            const type = msg.messageType ?? msg.action ?? '';
+            let payload: Record<string, unknown> | null = null;
+            if (msg.messagePayload) {
+              try {
+                payload = JSON.parse(unb64(msg.messagePayload)) as Record<string, unknown>;
+              } catch (err) {
+                log(`Signaling ${type || 'message'} with an unreadable payload (${msg.messagePayload.length} chars): ${(err as Error).message}`);
+                return;
+              }
+            }
+            if (!payload) {
+              log(`Signaling ${type || 'message'} without payload: ${raw.slice(0, 160)}`);
+              return;
+            }
+            const sdpType = typeof payload.type === 'string' ? payload.type : '';
+            if (type === 'SDP_OFFER' || sdpType === 'offer') {
+              cameraId = msg.senderClientId ?? cameraId;
+              if (offerTimer) clearTimeout(offerTimer);
+              log(`SDP offer received from the camera${msg.senderClientId ? ` (${msg.senderClientId})` : ''}; answering.`);
+              if (pc.signalingState !== 'stable') await pc.setLocalDescription({ type: 'rollback' });
+              await pc.setRemoteDescription({ type: 'offer', sdp: String(payload.sdp) });
+              remoteSet = true;
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              send({ action: 'SDP_ANSWER', messagePayload: b64(JSON.stringify({ type: 'answer', sdp: answer.sdp })), recipientClientId: cameraId ?? '' });
+              clearTimeout(answerTimer);
+              await flushCandidates();
+              done('answered');
+            } else if (type === 'SDP_ANSWER' || sdpType === 'answer') {
               log('SDP answer received from the camera.');
               clearTimeout(answerTimer);
               await pc.setRemoteDescription({ type: 'answer', sdp: String(payload.sdp) });
+              remoteSet = true;
+              await flushCandidates();
               done('answered');
-            } else if (msg.messageType === 'SDP_OFFER') {
-              log('The camera sent an offer instead; answering it.');
-              clearTimeout(answerTimer);
-              await pc.setRemoteDescription({ type: 'offer', sdp: String(payload.sdp) });
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              send({ action: 'SDP_ANSWER', messagePayload: b64(JSON.stringify({ type: 'answer', sdp: answer.sdp })), recipientClientId: msg.senderClientId ?? '' });
-              done('answered');
-            } else if (msg.messageType === 'ICE_CANDIDATE') {
-              await pc.addIceCandidate(payload as RTCIceCandidateInit).catch((err) => log(`ICE candidate rejected: ${(err as Error).message}`));
+            } else if (type === 'ICE_CANDIDATE' || typeof payload.candidate === 'string') {
+              const cand = payload as RTCIceCandidateInit;
+              if (remoteSet) await pc.addIceCandidate(cand).catch((err) => log(`ICE candidate rejected: ${(err as Error).message}`));
+              else pendingCandidates.push(cand);
             } else {
-              log(`Signaling message: ${msg.messageType ?? 'unknown'}`);
+              log(`Signaling message ${type || 'unknown'}: ${JSON.stringify(payload).slice(0, 160)}`);
             }
           } catch (err) {
-            log(`Signaling parse error: ${(err as Error).message}`);
+            log(`Signaling error: ${(err as Error).message} (frame ${raw.length} chars: ${raw.slice(0, 120)})`);
           }
         };
+        let opened = false;
+        ws.addEventListener('open', () => {
+          opened = true;
+        });
         ws.onerror = () => log('Signaling WebSocket error.');
-        ws.onclose = (e) => log(`Signaling WebSocket closed (${e.code}${e.reason ? ` ${e.reason}` : ''}).`);
+        ws.onclose = (e) => {
+          log(`Signaling WebSocket closed (${e.code}${e.reason ? ` ${e.reason}` : ''}).`);
+          if (!opened && !settled) {
+            clearTimeout(answerTimer);
+            setError('The signaling WebSocket to Amazon Kinesis could not be opened (blocked by a proxy/firewall, or the 5-minute grant expired). Close and try again.');
+            done('failed');
+          }
+        };
       });
 
+    const CANNOT_START = 'The Hue cloud, the Kinesis credentials and the signaling channel all work, but the camera never joins the stream. Philips cameras only start their live view when the Hue app tells them to over Signify\'s own private (MQTT) channel, which Hue Pilot cannot reproduce. Verified against this account: even a silent viewer waiting a full minute gets no offer. Use "Watch live on this PC" below (phone mirror) to see the live feed on the desktop today.';
+
     const run = async () => {
-      // Attempt 0: plain offer. Then signed variants, if a passphrase is stored.
+      // The camera is the WebRTC offerer once the Hue app starts its live view. We connect as a
+      // viewer and wait; if no offer comes we send our own (plain, then signed variants when the
+      // camera keeps "Live view protection" on and a passphrase is stored).
       let variants: { name: string; fields: Record<string, string> }[] | null = null;
       for (let i = 0; !closed; i++) {
         let name = 'plain offer';
         if (i > 0) {
           if (variants === null) variants = await window.hue.cloudSignOffer('probe').catch(() => []);
           if (i - 1 >= variants.length) {
-            const msg = variants.length
-              ? 'The camera did not answer any offer, plain or signed. Turn off "Live view protection" for this camera in the Hue app (Settings → Security → the camera) — the same setting Alexa/Google need — and try again.'
-              : 'The camera did not answer within 15 s. If "Live view protection" is on for this camera in the Hue app, either turn it off (Settings → Security → the camera; Alexa/Google need that too) or enter the home\'s E2EE passphrase below so Hue Pilot can try signed offers. Also make sure nobody is watching it in the Hue app right now.';
-            log(msg);
-            setError(msg);
+            log(CANNOT_START);
+            setError(CANNOT_START);
             return;
           }
           name = variants[i - 1].name;
@@ -166,7 +236,16 @@ function LiveViewPlayer({ session, onLog, onClose }: { session: LiveViewSession;
         if (result === 'answered' || result === 'failed' || closed) return;
         log(`No answer for the ${name} within ${ANSWER_TIMEOUT_MS / 1000} s.`);
         teardown();
-        if (i === 0) variants = await window.hue.cloudSignOffer('probe').catch(() => []);
+        if (i === 0) {
+          // Signed offers only help when the camera keeps "Live view protection" on. When we know it
+          // is off (or there is no passphrase), the plain attempt already settled it: report now.
+          variants = protectedHint === false ? [] : await window.hue.cloudSignOffer('probe').catch(() => []);
+          if (!variants.length) {
+            log(CANNOT_START);
+            setError(CANNOT_START);
+            return;
+          }
+        }
       }
     };
     void run();
@@ -196,7 +275,7 @@ function LiveViewPlayer({ session, onLog, onClose }: { session: LiveViewSession;
       if (statsTimer) clearInterval(statsTimer);
       teardown();
     };
-  }, [session, onLog]);
+  }, [session]);
 
   const live = stats.framesDecoded > 0;
   return (
@@ -393,10 +472,10 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
 
       {(error || status?.error) && <div className="mt-3 text-sm rounded-xl px-3 py-2 bg-rose-500/10 text-rose-400">{error ?? status?.error}</div>}
 
-      {session && <LiveViewPlayer session={session} onLog={addLog} onClose={() => setSession(null)} />}
+      {session && <LiveViewPlayer session={session} protectedHint={cloudCams.find((c) => c.id === session.cameraId)?.liveViewProtected ?? null} onLog={addLog} onClose={() => setSession(null)} />}
 
       <div className="mt-3 text-xs text-muted">
-        Works when the camera's <span className="font-medium">Live view protection</span> is off in the Hue app (Settings → Security → camera), the same requirement Alexa and Google Home have. With it on, Hue Pilot tries signed offers using the passphrase (best effort). Battery cameras wake up first, so the picture can take a few seconds.
+        <span className="font-medium">Experimental, and not yet working end to end.</span> Hue Pilot signs in, lists your cameras and gets live-stream credentials from the Hue cloud, but the camera only begins streaming when the Hue app tells it to over Signify's private channel, which this build cannot reproduce. To watch the live feed on this PC today, use <span className="font-medium">Watch live on this PC</span> below, which mirrors your phone and opens the Hue app on it.
       </div>
 
       <div className="mt-2">
