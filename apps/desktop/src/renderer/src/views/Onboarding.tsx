@@ -1,5 +1,5 @@
 import type { BridgeConfigV1, DiscoveredBridge } from '@hue/core';
-import { ChevronDown, Cpu, Lightbulb, Plug2, RefreshCw, Search, Settings, Wifi } from 'lucide-react';
+import { ChevronDown, Cpu, Lightbulb, RefreshCw, Search, Settings, Wifi } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, cx, Field, Input, Select, Spinner } from '../components/ui';
 import { useApp } from '../store';
@@ -82,17 +82,16 @@ export default function Onboarding() {
     <div className="h-full flex flex-col">
       <div className="drag h-[52px] shrink-0 flex items-center justify-end pr-[150px]">
         <div className="no-drag flex gap-1">
-          <Button size="sm" variant="ghost" icon={<Plug2 size={14} />} onClick={() => navigate({ view: 'agents' })}>AI agents</Button>
           <Button size="sm" variant="ghost" icon={<Settings size={14} />} onClick={() => navigate({ view: 'settings' })}>Settings</Button>
         </div>
       </div>
       <div className="scroll flex-1 flex items-start justify-center px-6 pb-10">
         <div className="w-full max-w-2xl fade-in">
           <div className="flex items-center gap-4 mb-8 mt-4">
-            <div className="h-16 w-16 rounded-3xl bg-gradient-to-br from-accent via-accent-2 to-accent-3 shadow-lg flex items-center justify-center"><Lightbulb size={30} className="text-white" /></div>
+            <div className="h-16 w-16 rounded-3xl bg-gradient-to-br from-accent to-accent-2 shadow-lg flex items-center justify-center"><Lightbulb size={30} className="text-[#1c1814]" /></div>
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight">Welcome to Hue Pilot</h1>
-              <p className="text-muted mt-1">Control your Philips Hue lights from the desktop and with AI. First, connect to your bridge.</p>
+              <h1 className="text-3xl font-bold tracking-tight">Hue Pilot</h1>
+              <p className="text-muted mt-1">Connect to your Hue bridge.</p>
             </div>
           </div>
 
@@ -105,20 +104,19 @@ export default function Onboarding() {
                   <div className="h-16 w-16 rounded-full bg-gradient-to-br from-accent to-accent-2 shadow-lg" />
                 </div>
               </div>
-              <h2 className="text-xl font-semibold">Press the round button on your Hue bridge</h2>
+              <h2 className="text-xl font-semibold">Press the button on your Hue bridge</h2>
               <p className="text-muted mt-2">Waiting for {pairing.name ?? pairing.target.host}… {elapsed > 0 && `(${elapsed}s)`}</p>
-              <p className="text-xs text-muted mt-1">The button is on top of the bridge, in the centre. This pairs Hue Pilot and the AI agents in one go.</p>
               <Button variant="ghost" className="mt-6" onClick={() => { stopRef.current = true; setPairing(null); }}>Cancel</Button>
             </div>
           ) : (
             <>
               <div className="surface rounded-3xl p-5 mb-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2 font-medium"><Search size={16} className="text-accent" /> Bridges on your network</div>
+                  <div className="flex items-center gap-2 font-medium"><Search size={16} className="text-accent" /> On your network</div>
                   <Button size="sm" variant="ghost" icon={scanning ? <Spinner size={14} /> : <RefreshCw size={14} />} onClick={scan} disabled={scanning}>{scanning ? 'Scanning…' : 'Scan again'}</Button>
                 </div>
-                {scanning && !found.length && <div className="text-sm text-muted py-6 text-center">Looking for bridges via the Hue discovery service…</div>}
-                {!scanning && !found.length && <div className="text-sm text-muted py-4 text-center">No bridge found automatically. Enter its IP address below (you can find it in the Hue app under Settings → Bridge settings).</div>}
+                {scanning && !found.length && <div className="text-sm text-muted py-6 text-center">Looking for bridges…</div>}
+                {!scanning && !found.length && <div className="text-sm text-muted py-4 text-center">None found. Enter the IP address below.</div>}
                 <div className="space-y-2">
                   {found.map((b) => (
                     <div key={b.id} className="flex items-center gap-3 rounded-2xl surface-2 px-4 py-3">
@@ -134,7 +132,7 @@ export default function Onboarding() {
               </div>
 
               <div className="surface rounded-3xl p-5">
-                <div className="font-medium mb-3">Connect by IP address</div>
+                <div className="font-medium mb-3">By IP address</div>
                 <div className="flex gap-2">
                   <Input value={manual} onChange={(e) => setManual(e.target.value)} placeholder="192.168.1.2" onKeyDown={(e) => { const t = manualTarget(); if (e.key === 'Enter' && t) startPairing(t); }} />
                   <Button variant="primary" disabled={!manual.trim()} onClick={() => { const t = manualTarget(); if (t) startPairing(t); }}>Connect</Button>
@@ -144,13 +142,13 @@ export default function Onboarding() {
                 </button>
                 {advanced && (
                   <div className="grid grid-cols-2 gap-4 mt-2 fade-in">
-                    <Field label="Port" hint="Leave empty for the default">
+                    <Field label="Port">
                       <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder={protocol === 'https' ? '443' : '80'} />
                     </Field>
-                    <Field label="Protocol" hint="Real bridges use HTTPS">
+                    <Field label="Protocol">
                       <Select value={protocol} onChange={(e) => setProtocol(e.target.value as 'https' | 'http')}>
                         <option value="https">https</option>
-                        <option value="http">http (mock / dev bridge)</option>
+                        <option value="http">http</option>
                       </Select>
                     </Field>
                   </div>

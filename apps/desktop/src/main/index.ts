@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, Tray } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, safeStorage, shell, Tray } from 'electron';
 import { EmulatorHost } from './hue-emulator.ts';
 import {
   buildSystemPrompt,
@@ -146,7 +146,7 @@ function isDark(): boolean {
 }
 
 function overlayColors() {
-  return isDark() ? { color: '#0b0f17', symbolColor: '#e2e8f0', height: 40 } : { color: '#f8fafc', symbolColor: '#0f172a', height: 40 };
+  return isDark() ? { color: '#0e0c0a', symbolColor: '#f4efe8', height: 40 } : { color: '#f6f3ee', symbolColor: '#1c1814', height: 40 };
 }
 
 function applyTheme() {
@@ -171,7 +171,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: isDark() ? '#0b0f17' : '#f8fafc',
+    backgroundColor: isDark() ? '#0e0c0a' : '#f6f3ee',
     title: 'Hue Pilot',
     icon: resourcePath('icon.png'),
     autoHideMenuBar: true,
@@ -390,7 +390,7 @@ const handlers: Handlers = {
   getConnection: async () => config.bridge,
   getStatus: async () => hue.status,
   reconnect: async () => {
-    if (config.bridge) await hue.connect(config.bridge);
+    if (config.bridge) await hue.reconnect(config.bridge);
   },
 
   getHome: () => hue.getHome(),
@@ -651,13 +651,27 @@ app.on('activate', showWindow);
 
 app.whenReady().then(async () => {
   cloud.load();
-  // Warm the camera engine in the background so the first camera click is instant.
-  if (emulator.status().available) setTimeout(() => emulator.ensureRunning().catch(() => undefined), 4000);
+  // Start the camera engine right away, hidden, so a camera opens the moment it is clicked.
+  if (emulator.status().available) emulator.ensureRunning().catch(() => undefined);
   nativeTheme.themeSource = config.settings.theme;
   createWindow();
   createTray();
   if (config.bridge) hue.connect(config.bridge).catch(() => undefined);
   restartApi().catch(() => undefined);
+  // The bridge session dies quietly on sleep/network changes; start over on wake, and whenever the
+  // connection has been down for a while without recovering by itself.
+  powerMonitor.on('resume', () => setTimeout(() => hue.reconnect().catch(() => undefined), 3000));
+  let downSince: number | null = null;
+  setInterval(() => {
+    const s = hue.status;
+    const down = s.state !== 'connected' || s.stream !== 'open';
+    if (!down) downSince = null;
+    else if (downSince === null) downSince = Date.now();
+    else if (Date.now() - downSince > 45_000) {
+      downSince = Date.now();
+      hue.reconnect().catch(() => undefined);
+    }
+  }, 10_000);
   if (process.env.HUE_PILOT_SCREENSHOT_DIR) {
     win?.webContents.once('did-finish-load', () => {
       runScreenshots().catch((err) => {

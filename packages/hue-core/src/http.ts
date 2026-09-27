@@ -75,14 +75,40 @@ export interface SseOptions {
   onData: (data: string) => void;
   onOpen?: () => void;
   onClose?: (err?: Error) => void;
+  /** Give up if the server has not answered with headers within this time (default 15 s). */
+  openTimeoutMs?: number;
+  /** Close (and let the caller reconnect) after this long without any bytes (default 90 s). */
+  idleTimeoutMs?: number;
 }
 
-/** Minimal Server-Sent-Events reader on top of node http/https. */
+/**
+ * Minimal Server-Sent-Events reader on top of node http/https.
+ *
+ * Two watchdogs matter with a Hue bridge: it accepts the connection but never answers when it
+ * already has too many event-stream clients, and a stream that silently dies (sleep, Wi-Fi drop)
+ * never emits `end`. Both used to leave the client stuck in "connecting" or "open" forever.
+ */
 export function openSse(url: string, opts: SseOptions): SseHandle {
   const u = new URL(url);
   const isHttps = u.protocol === 'https:';
   const lib = isHttps ? https : http;
   let closed = false;
+  let opened = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const fail = (err: Error) => {
+    if (closed) return;
+    closed = true;
+    if (idleTimer) clearTimeout(idleTimer);
+    req.destroy();
+    opts.onClose?.(err);
+  };
+  const touch = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => fail(new HttpError(`Event stream from ${u.host} went quiet`)), opts.idleTimeoutMs ?? 90_000);
+  };
+  const openTimer = setTimeout(() => {
+    if (!opened) fail(new HttpError(`Event stream from ${u.host} did not open in time`));
+  }, opts.openTimeoutMs ?? 15_000);
   const req = lib.request(
     {
       hostname: u.hostname,
@@ -93,15 +119,19 @@ export function openSse(url: string, opts: SseOptions): SseHandle {
       rejectUnauthorized: !opts.insecureTls,
     },
     (res) => {
+      clearTimeout(openTimer);
       if ((res.statusCode ?? 0) >= 400) {
-        opts.onClose?.(new HttpError(`Event stream rejected with status ${res.statusCode}`, res.statusCode));
         res.resume();
+        fail(new HttpError(`Event stream rejected with status ${res.statusCode}`, res.statusCode));
         return;
       }
+      opened = true;
+      touch();
       opts.onOpen?.();
       let buffer = '';
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
+        touch();
         buffer += chunk;
         let idx: number;
         while ((idx = buffer.indexOf('\n\n')) >= 0) {
@@ -114,21 +144,17 @@ export function openSse(url: string, opts: SseOptions): SseHandle {
           if (dataLines.length) opts.onData(dataLines.join('\n'));
         }
       });
-      res.on('end', () => {
-        if (!closed) opts.onClose?.();
-      });
-      res.on('error', (err) => {
-        if (!closed) opts.onClose?.(err);
-      });
+      res.on('end', () => fail(new HttpError(`Event stream from ${u.host} ended`)));
+      res.on('error', (err) => fail(err instanceof Error ? err : new HttpError(String(err))));
     },
   );
-  req.on('error', (err) => {
-    if (!closed) opts.onClose?.(err);
-  });
+  req.on('error', (err) => fail(err instanceof Error ? err : new HttpError(String(err))));
   req.end();
   return {
     close() {
       closed = true;
+      clearTimeout(openTimer);
+      if (idleTimer) clearTimeout(idleTimer);
       req.destroy();
     },
   };

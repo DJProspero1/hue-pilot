@@ -2,17 +2,8 @@ import { create } from 'zustand';
 import { EMPTY_HOME, lightHex, type BridgeConnection, type GroupView, type HomeModel, type LightState, type LightView } from '@hue/core';
 import { DEFAULT_SETTINGS, type ChatMessage, type ConnectionStatus, type MotionEvent, type Settings } from '../../shared/ipc-types.ts';
 
-export type Route =
-  | { view: 'home' }
-  | { view: 'room'; id: string }
-  | { view: 'lights' }
-  | { view: 'scenes' }
-  | { view: 'automations' }
-  | { view: 'accessories' }
-  | { view: 'cameras' }
-  | { view: 'assistant' }
-  | { view: 'agents' }
-  | { view: 'settings' };
+/** One screen. Settings and the assistant open as overlays on top of it. */
+export type Route = { view: 'home' } | { view: 'settings' };
 
 const MOTION_EVENT_LIMIT = 200;
 
@@ -35,6 +26,12 @@ interface AppState {
   settings: Settings;
   connection: BridgeConnection | null;
   route: Route;
+  /** Assistant slide-over. */
+  assistantOpen: boolean;
+  /** Room/zone card showing its lights. */
+  expandedGroup: string | null;
+  /** Camera the dashboard should be watching (from tray/shortcuts), or null. */
+  wantedCamera: string | null;
   lightSheet: string | null;
   toasts: Toast[];
   chat: ChatMessage[];
@@ -48,6 +45,9 @@ interface AppState {
   init(): Promise<void>;
   initInner(): Promise<void>;
   navigate(route: Route): void;
+  toggleAssistant(open?: boolean): void;
+  expandGroup(id: string | null): void;
+  setWantedCamera(name: string | null): void;
   openLight(id: string | null): void;
   toast(text: string, kind?: Toast['kind']): void;
   dismissToast(id: number): void;
@@ -120,6 +120,9 @@ export const useApp = create<AppState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   connection: null,
   route: { view: 'home' },
+  assistantOpen: false,
+  expandedGroup: null,
+  wantedCamera: null,
   lightSheet: null,
   toasts: [],
   chat: [],
@@ -138,27 +141,8 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async initInner() {
-    const [settings, connection, status, chat] = await Promise.all([
-      window.hue.getSettings(),
-      window.hue.getConnection(),
-      window.hue.getStatus(),
-      window.hue.getChatHistory(),
-    ]);
-    applyTheme(settings.theme);
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(get().settings.theme));
-    set({ settings, connection, status, chat });
-    if (connection) {
-      try {
-        const home = await window.hue.getHome();
-        get().applyHome(home);
-      } catch {
-        /* status event will explain */
-      }
-      window.hue
-        .getMotionEvents()
-        .then((motionEvents) => set({ motionEvents }))
-        .catch(() => undefined);
-    }
+    // Subscribe before the first fetches: the bridge usually connects while this runs, and a
+    // status event that arrived before the listener existed used to leave the UI on "connecting".
     window.hue.onHome((home) => get().applyHome(home));
     window.hue.onStatus((status) => set({ status }));
     window.hue.onMotionEvent((event) => {
@@ -177,12 +161,34 @@ export const useApp = create<AppState>((set, get) => ({
       if (m.role === 'assistant' && get().settings.speakReplies) speak(m.text);
     });
     window.hue.onNavigate((route) => {
-      const [view, id] = route.split(':');
-      if (view === 'room' && id) get().navigate({ view: 'room', id });
-      else if (view === 'light' && id) set({ lightSheet: id });
-      else if (view) get().navigate({ view } as Route);
+      // Tray / shortcuts: "room:<id>", "light:<id>", "camera:<name>", "settings", "assistant", anything else = home.
+      const idx = route.indexOf(':');
+      const view = idx >= 0 ? route.slice(0, idx) : route;
+      const id = idx >= 0 ? route.slice(idx + 1) : '';
+      if (view === 'room' && id) set({ route: { view: 'home' }, expandedGroup: id, lightSheet: null });
+      else if (view === 'light' && id) set({ route: { view: 'home' }, lightSheet: id });
+      else if (view === 'camera' && id) set({ route: { view: 'home' }, wantedCamera: id });
+      else if (view === 'settings') set({ route: { view: 'settings' } });
+      else if (view === 'assistant') set({ route: { view: 'home' }, assistantOpen: true });
+      else set({ route: { view: 'home' } });
     });
-    set({ ready: true });
+    const [settings, connection, chat] = await Promise.all([window.hue.getSettings(), window.hue.getConnection(), window.hue.getChatHistory()]);
+    applyTheme(settings.theme);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(get().settings.theme));
+    set({ settings, connection, chat });
+    if (connection) {
+      try {
+        const home = await window.hue.getHome();
+        get().applyHome(home);
+      } catch {
+        /* status event will explain */
+      }
+      window.hue
+        .getMotionEvents()
+        .then((motionEvents) => set({ motionEvents }))
+        .catch(() => undefined);
+    }
+    set({ status: await window.hue.getStatus(), ready: true });
   },
 
   applyHome(home) {
@@ -192,6 +198,18 @@ export const useApp = create<AppState>((set, get) => ({
 
   navigate(route) {
     set({ route, lightSheet: null });
+  },
+
+  toggleAssistant(open) {
+    set({ assistantOpen: open ?? !get().assistantOpen });
+  },
+
+  expandGroup(id) {
+    set({ expandedGroup: get().expandedGroup === id ? null : id });
+  },
+
+  setWantedCamera(name) {
+    set({ wantedCamera: name });
   },
 
   openLight(id) {

@@ -14,8 +14,10 @@ import type { EmulatorStatus } from '../shared/ipc-types.ts';
  * WebRTC's UDP path, so UDP is blocked inside the emulator (except DNS and the emulator's own
  * subnet), which makes WebRTC fall back to the TURN relay over TCP — that connects in about a second.
  *
- * The emulator is kept running in the background (detached) so opening a camera is instant after
- * the first boot. Sign-in and the E2EE passphrase live in the AVD's own storage.
+ * The emulator keeps running in the background (it is not tied to this process) so opening a camera
+ * is instant after the first boot. Sign-in and the E2EE passphrase live in the AVD's own storage.
+ * Everything is spawned with a hidden console: a detached spawn would leave the emulator's helper
+ * processes (netsimd) without a console, and Windows then pops a visible terminal for them.
  */
 
 export const HUE_APP_PACKAGE = 'com.philips.lighting.hue2';
@@ -80,6 +82,24 @@ export function findTileBounds(uiXml: string, name: string): { x1: number; y1: n
 }
 
 const BOTTOM_NAV = /^(HOME|AUTOMATIONS|SYNC|EXPLORE|SETTINGS)$/;
+
+/**
+ * Camera names on the Hue app's Security page: the full-width tiles whose label is the name
+ * followed by status lines (battery, Wi-Fi, time). Rooms, headers and nav items never match.
+ */
+export function listCameraTiles(uiXml: string): string[] {
+  const names: string[] = [];
+  for (const m of uiXml.matchAll(/content-desc="([^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/g)) {
+    const lines = m[1].split('&#10;');
+    const width = Number(m[4]) - Number(m[2]);
+    if (lines.length < 2 || width < 900) continue;
+    const name = lines[0].trim();
+    // Skip the page's own summary tiles: the arm state header and the 'Devices / Everything OK' card.
+    if (!name || /^(Disarmed|Armed|Devices)$/.test(name) || /^(Disarmed|Armed)/.test(name) || /Brightness slider/.test(name) || names.includes(name)) continue;
+    names.push(name);
+  }
+  return names;
+}
 
 /**
  * A safe point to tap inside [tile]: its centre, unless the app's bottom navigation bar covers the
@@ -147,6 +167,8 @@ export class EmulatorHost extends EventEmitter {
   private stream: ChildProcess | null = null;
   private streamWanted = false;
   private emulatorProc: ChildProcess | null = null;
+  /** The app wants the engine up: restart it when it disappears (closed, crashed). */
+  private wantRunning = false;
 
   constructor(opts: EmulatorHostOptions = {}) {
     super();
@@ -159,11 +181,52 @@ export class EmulatorHost extends EventEmitter {
       serial: null,
       hueAppInstalled: null,
       camera: null,
+      cameras: [],
       videoBox: null,
       streaming: false,
       error: this.paths ? null : 'Android SDK with adb and the emulator was not found (ANDROID_HOME, ANDROID_SDK_ROOT or %LOCALAPPDATA%\\Android\\Sdk).',
       hint: null,
     };
+    if (this.paths) {
+      this.startAdbServer();
+      this.startWatchdog();
+    }
+  }
+
+  /** Every 30 s: is the emulator still there? If it vanished, bring it back (hidden). */
+  private startWatchdog() {
+    const timer = setInterval(() => {
+      if (!this.wantRunning || this.starting || !this.serial) return;
+      this.connectedEmulator()
+        .then((serial) => {
+          if (!serial) this.onEmulatorGone(null);
+        })
+        .catch(() => undefined);
+    }, 30_000);
+    timer.unref();
+  }
+
+  private onEmulatorGone(code: number | null) {
+    if (!this.serial && this.st.state === 'stopped') return;
+    this.log(`Emulator gone${code !== null ? ` (exit ${code})` : ''}.`);
+    this.stopStream();
+    this.serial = null;
+    this.set({ state: 'stopped', serial: null, camera: null, videoBox: null, cameras: [] });
+    if (this.wantRunning) setTimeout(() => this.ensureRunning().catch(() => undefined), 3000);
+  }
+
+  /**
+   * Runs the adb server as a hidden child so that no adb command ever has to fork one: on Windows
+   * a forked adb server pops up a console window ("daemon not running; starting now…").
+   */
+  private startAdbServer() {
+    try {
+      const proc = spawn(this.paths!.adb, ['-P', '5037', 'nodaemon', 'server'], { stdio: 'ignore', windowsHide: true });
+      proc.on('error', () => undefined);
+      proc.on('exit', () => undefined); // exits at once when a server is already running: harmless
+    } catch {
+      /* adb missing or not executable: later commands report it */
+    }
   }
 
   private log(line: string) {
@@ -215,6 +278,7 @@ export class EmulatorHost extends EventEmitter {
 
   private async ensureInner(): Promise<EmulatorStatus> {
     if (!this.paths) return this.status();
+    this.wantRunning = true;
     try {
       this.set({ error: null, hint: null });
       let serial = await this.connectedEmulator();
@@ -251,23 +315,71 @@ export class EmulatorHost extends EventEmitter {
         return this.status();
       }
       await this.shell(`am start -W -n ${HUE_APP_PACKAGE}/.ContentActivity`, 30_000);
+      await this.listCameras().catch((err) => this.log(`Camera list failed: ${(err as Error).message}`));
       this.set({ state: 'ready' });
-      this.log('Camera engine ready.');
+      this.log(`Camera engine ready${this.st.cameras.length ? ` (${this.st.cameras.join(', ')})` : ''}.`);
     } catch (err) {
       this.set({ state: 'error', error: (err as Error).message });
     }
     return this.status();
   }
 
+  /** Reads the camera names from the Hue app's own Security page (no cloud account needed). */
+  async listCameras(): Promise<string[]> {
+    if (!this.serial || this.st.camera) return this.st.cameras;
+    await this.shell('settings put system accelerometer_rotation 0; wm user-rotation lock 0');
+    // Right after launch the app may still be on its splash screen: wait for a real page.
+    let xml = '';
+    for (let i = 0; i < 15; i++) {
+      xml = await this.uiDump();
+      if (findNodeBounds(xml, /^HOME$/) || findNodeBounds(xml, /^Close$/) || listCameraTiles(xml).length) break;
+      await sleep(2000);
+    }
+    if (findNodeBounds(xml, /^Close$/) && findNodeBounds(xml, /^(Live view|Connection Issue|Connecting)/)) {
+      await this.tap(findNodeBounds(xml, /^Close$/)!);
+      await sleep(1200);
+      xml = await this.uiDump();
+    }
+    let names = listCameraTiles(xml);
+    if (!names.length) {
+      const homeTab = findNodeBounds(xml, /^HOME$/);
+      if (homeTab) {
+        await this.tap(homeTab);
+        await sleep(1200);
+        xml = await this.uiDump();
+      }
+      const security = findNodeBounds(xml, /^(Disarmed|Armed)[^\n]*\n/);
+      if (security) {
+        await this.tap(security);
+        await sleep(2500);
+        xml = await this.uiDump();
+        names = listCameraTiles(xml);
+        // The list may continue below the fold.
+        if (names.length) {
+          const size = screenSize(xml);
+          await this.shell(`input swipe ${Math.round(size.w / 2)} ${Math.round(size.h * 0.75)} ${Math.round(size.w / 2)} ${Math.round(size.h * 0.25)} 300`);
+          await sleep(1000);
+          for (const n of listCameraTiles(await this.uiDump())) if (!names.includes(n)) names.push(n);
+        }
+      }
+    }
+    if (names.length) this.set({ cameras: names });
+    else this.log('No camera tiles found on the Security page.');
+    return names;
+  }
+
   private async launchEmulator(avd: string): Promise<string | null> {
     const args = ['-avd', avd, '-no-window', '-no-audio', '-no-boot-anim', '-gpu', 'host', '-memory', '4096', '-cores', '4', '-netspeed', 'full', '-netdelay', 'none'];
-    const proc = spawn(this.paths!.emulator, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    // Not detached on purpose: with a hidden console of its own the emulator's children inherit it
+    // and stay invisible; the process outlives Hue Pilot either way.
+    const proc = spawn(this.paths!.emulator, args, { stdio: 'ignore', windowsHide: true });
     proc.unref();
     this.emulatorProc = proc;
     let exited = false;
+    proc.on('error', () => undefined);
     proc.on('exit', (code) => {
       exited = true;
-      this.log(`Emulator process exited (${code}).`);
+      if (this.emulatorProc === proc) this.onEmulatorGone(code);
     });
     const t0 = Date.now();
     while (Date.now() - t0 < APPEAR_TIMEOUT_MS) {
@@ -315,6 +427,10 @@ export class EmulatorHost extends EventEmitter {
   /** Navigates the Hue app to [name]'s live view and turns the emulator to landscape. */
   async openCamera(name: string): Promise<EmulatorStatus> {
     await this.ensureRunning();
+    if (this.st.state === 'ready' && !(await this.connectedEmulator())) {
+      this.onEmulatorGone(null);
+      await this.ensureRunning();
+    }
     if (this.st.state !== 'ready') return this.status();
     try {
       this.set({ error: null, videoBox: null });
@@ -362,7 +478,11 @@ export class EmulatorHost extends EventEmitter {
           await sleep(1200);
         }
       }
-      if (!point) throw new Error(`The camera "${name}" was not found on the Hue app's Security page.`);
+      if (!point) {
+        const names = listCameraTiles(xml);
+        if (names.length) this.set({ cameras: names });
+        throw new Error(names.length ? `The Hue app lists ${names.map((n) => `"${n}"`).join(' and ')}; "${name}" is not one of them.` : `The camera "${name}" was not found on the Hue app's Security page.`);
+      }
       // Tap, then confirm the live view really opened (retry the tap once), and measure the video box.
       let videoBox: EmulatorStatus['videoBox'] = null;
       let opened = false;
@@ -436,6 +556,7 @@ export class EmulatorHost extends EventEmitter {
   }
 
   async stopEmulator(): Promise<EmulatorStatus> {
+    this.wantRunning = false;
     this.stopStream();
     if (this.serial) {
       await this.adb(['emu', 'kill'], 15_000).catch(() => undefined);

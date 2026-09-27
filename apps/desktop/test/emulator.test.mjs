@@ -11,6 +11,7 @@ const HOME = `<hierarchy rotation="0"><node bounds="[0,0][1080,2400]" content-de
 
 const SECURITY = `<hierarchy rotation="0"><node bounds="[0,0][1080,2400]" content-desc="">
 <node content-desc="Disarmed" bounds="[32,315][1049,399]" />
+<node content-desc="Devices&#10;Everything OK" bounds="[32,608][1049,797]" />
 <node content-desc="Camera&#10; Fair&#10;50 min ago" bounds="[32,1517][1049,2089]" />
 <node content-desc="Living room&#10; 48%&#10; Excellent&#10;2:07 pm" bounds="[32,2120][1049,2400]" /></node></hierarchy>`;
 
@@ -56,6 +57,13 @@ test('the last camera tile is partly under the bottom nav: tap the visible strip
   assert.deepEqual(visibleTapPoint(withNav, partly), { x: 541, y: 2041 });
   // No nav bar on screen: plain centre.
   assert.deepEqual(visibleTapPoint(SECURITY, living), { x: 541, y: 2260 });
+});
+
+test('camera names come from the Security page tiles, never rooms or headers', async () => {
+  const { listCameraTiles } = await import('../src/main/hue-emulator.ts');
+  assert.deepEqual(listCameraTiles(SECURITY), ['Camera', 'Living room']);
+  assert.deepEqual(listCameraTiles(HOME), []); // "Disarmed\nReady to arm" and the room tiles are excluded
+  assert.deepEqual(listCameraTiles(LIVE), []);
 });
 
 test('adb devices parsing picks a booted emulator only', () => {

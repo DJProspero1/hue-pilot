@@ -2,38 +2,45 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@theme {
-  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --color-accent: #ff8a3d;
-  --color-accent-2: #ff5e7e;
-  --color-accent-3: #a855f7;
-  --radius-xl2: 1.25rem;
+@font-face {
+  font-family: 'Manrope';
+  src: url('/fonts/manrope.ttf') format('truetype');
+  font-weight: 200 800;
+  font-display: swap;
 }
 
+@theme {
+  --font-sans: 'Manrope', 'Segoe UI Variable Text', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+  --color-accent: #ffb454;
+  --color-accent-2: #ff8a5b;
+  --color-accent-3: #c084fc;
+}
+
+/* Warm near-black palette shared with the Android app; light theme is the same warmth inverted. */
 :root {
   color-scheme: light;
-  --bg: #f4f6fb;
+  --bg: #f6f3ee;
   --bg-elev: #ffffff;
-  --bg-elev-2: #eef1f7;
-  --fg: #0f172a;
-  --fg-muted: #64748b;
-  --border: rgba(15, 23, 42, 0.09);
-  --border-strong: rgba(15, 23, 42, 0.18);
-  --shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.25);
-  --sidebar: #ffffff;
+  --bg-elev-2: #efe9e1;
+  --fg: #1c1814;
+  --fg-muted: #7d7166;
+  --border: rgba(28, 24, 20, 0.08);
+  --border-strong: rgba(28, 24, 20, 0.18);
+  --shadow: 0 12px 32px -14px rgba(28, 24, 20, 0.28);
+  --accent: #e59a2a;
 }
 
 .dark {
   color-scheme: dark;
-  --bg: #0b0f17;
-  --bg-elev: #121826;
-  --bg-elev-2: #1a2233;
-  --fg: #e5e7eb;
-  --fg-muted: #94a3b8;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.18);
-  --shadow: 0 14px 40px -16px rgba(0, 0, 0, 0.7);
-  --sidebar: #0e131d;
+  --bg: #0e0c0a;
+  --bg-elev: #17140f;
+  --bg-elev-2: #211c16;
+  --fg: #f4efe8;
+  --fg-muted: #a1968a;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --shadow: 0 18px 44px -18px rgba(0, 0, 0, 0.75);
+  --accent: #ffb454;
 }
 
 html,
@@ -44,7 +51,8 @@ body,
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -54,7 +62,7 @@ body,
 }
 
 ::selection {
-  background: rgba(255, 138, 61, 0.35);
+  background: rgba(255, 180, 84, 0.35);
 }
 
 .drag {
@@ -81,33 +89,40 @@ body,
   box-shadow: var(--shadow);
 }
 
+/* A card washed with the colour of what it controls (set --tint to a hex). */
+.ambient {
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--tint, transparent) 22%, transparent), transparent 60%),
+    var(--bg-elev);
+  border: 1px solid color-mix(in srgb, var(--tint, var(--border)) 28%, var(--border));
+}
+.ambient.off {
+  background: var(--bg-elev);
+  border-color: var(--border);
+}
+
 .scroll {
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+  scrollbar-color: rgba(128, 118, 108, 0.35) transparent;
 }
 .scroll::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 .scroll::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
+  background: rgba(128, 118, 108, 0.3);
   border-radius: 8px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
-.scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.5);
-  background-clip: content-box;
-  border: 3px solid transparent;
-}
 
-/* Range slider */
+/* Brightness pill: a track filled with the light's own colour. */
 input[type='range'].slider {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 28px;
+  height: 26px;
   background: transparent;
   cursor: pointer;
   margin: 0;
@@ -119,22 +134,22 @@ input[type='range'].slider:disabled {
 input[type='range'].slider::-webkit-slider-runnable-track {
   height: 10px;
   border-radius: 999px;
-  background: var(--track, linear-gradient(90deg, rgba(128, 128, 128, 0.25), rgba(128, 128, 128, 0.25)));
+  background: var(--track, linear-gradient(90deg, rgba(128, 118, 108, 0.25), rgba(128, 118, 108, 0.25)));
   border: 1px solid var(--border);
 }
 input[type='range'].slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 22px;
-  height: 22px;
-  margin-top: -7px;
+  width: 20px;
+  height: 20px;
+  margin-top: -6px;
   border-radius: 999px;
   background: #fff;
-  border: 2px solid rgba(15, 23, 42, 0.15);
+  border: 2px solid rgba(28, 24, 20, 0.15);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   transition: transform 0.12s ease;
 }
 input[type='range'].slider:active::-webkit-slider-thumb {
-  transform: scale(1.12);
+  transform: scale(1.1);
 }
 input[type='range'].slider.thick::-webkit-slider-runnable-track {
   height: 16px;
@@ -171,19 +186,6 @@ input[type='range'].slider.thick::-webkit-slider-thumb {
     opacity: 1;
   }
 }
-.pulse-ring {
-  animation: pulseRing 1.8s ease-out infinite;
-}
-@keyframes pulseRing {
-  0% {
-    transform: scale(0.8);
-    opacity: 0.9;
-  }
-  100% {
-    transform: scale(1.8);
-    opacity: 0;
-  }
-}
 .spin {
   animation: spin 0.9s linear infinite;
 }
@@ -193,7 +195,7 @@ input[type='range'].slider.thick::-webkit-slider-thumb {
   }
 }
 .glow-on {
-  box-shadow: 0 0 0 1px var(--border), 0 0 24px -6px var(--glow, rgba(255, 200, 120, 0.6));
+  box-shadow: 0 0 0 1px var(--border), 0 0 26px -8px var(--glow, rgba(255, 180, 84, 0.6));
 }
 
 .prose-chat p {
@@ -206,4 +208,59 @@ code,
 pre {
   font-family: 'Cascadia Code', 'Consolas', ui-monospace, monospace;
   font-size: 12px;
+}
+
+/* Motion badge ripple. */
+.pulse-ring {
+  animation: pulseRing 1.8s ease-out infinite;
+}
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* The dashboard: main column + side rail once there is room (container = <main>). */
+main {
+  container-type: inline-size;
+}
+.dash {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+@container (min-width: 1040px) {
+  .dash {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+}
+.camstage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  /* Never taller than about half the window: a 16:9 picture plus the tile column. */
+  max-width: calc(min(56vh, 620px) * 16 / 9 + 240px);
+}
+@container (max-width: 720px) {
+  .camstage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.dock-in {
+  animation: dockIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes dockIn {
+  from {
+    transform: translateX(40px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
 }

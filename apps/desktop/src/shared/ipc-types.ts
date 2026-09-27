@@ -297,6 +297,8 @@ export interface EmulatorStatus {
   hueAppInstalled: boolean | null;
   /** Camera whose live view is open in the Hue app, if any. */
   camera: string | null;
+  /** Camera names as the Hue app lists them on its Security page. */
+  cameras: string[];
   /** Where the video sits on the emulator screen (pixels), so the renderer can crop to it. */
   videoBox: { x: number; y: number; w: number; h: number } | null;
   streaming: boolean;

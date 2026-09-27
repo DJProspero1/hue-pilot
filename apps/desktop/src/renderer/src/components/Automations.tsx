@@ -1,15 +1,16 @@
 import { WEEKDAYS, type Weekday } from '@hue/core';
-import { CalendarClock, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { CalendarClock, Plus, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Chip, cx, EmptyState, Field, IconButton, Input, Modal, Select, Spinner, Toggle } from '../components/ui';
 import { useApp } from '../store';
 import type { ScheduleSpec, ScheduleView } from '../../../shared/ipc-types.ts';
+import { Button, Chip, cx, Field, IconButton, Input, Modal, Select, Spinner, Toggle } from './ui';
 
 const DAY_LABEL: Record<Weekday, string> = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
 
-export default function AutomationsView() {
+/** Bridge schedules: a compact list with a "+" to add one. */
+export default function Automations() {
   const home = useApp((s) => s.home);
-  const status = useApp((s) => s.status);
+  const connected = useApp((s) => s.status.state === 'connected' || s.home.updatedAt > 0);
   const toast = useApp((s) => s.toast);
   const [items, setItems] = useState<ScheduleView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +28,7 @@ export default function AutomationsView() {
   const [sceneId, setSceneId] = useState('');
 
   const load = useCallback(async () => {
-    if (status.state !== 'connected') return;
+    if (!connected) return;
     try {
       setError(null);
       setItems(await window.hue.listSchedules());
@@ -35,7 +36,7 @@ export default function AutomationsView() {
       setError((err as Error).message);
       setItems([]);
     }
-  }, [status.state]);
+  }, [connected]);
 
   useEffect(() => {
     load();
@@ -44,22 +45,17 @@ export default function AutomationsView() {
   const targets = [
     ...(home.home ? [{ key: `group:${home.home.id}`, label: 'All lights', kind: 'group' as const, id: home.home.id }] : []),
     ...home.groups.map((g) => ({ key: `group:${g.id}`, label: `${g.name}${g.kind === 'zone' ? ' (zone)' : ''}`, kind: 'group' as const, id: g.id })),
-    ...home.lights.map((l) => ({ key: `light:${l.id}`, label: `💡 ${l.name}${l.roomName ? ` · ${l.roomName}` : ''}`, kind: 'light' as const, id: l.id })),
+    ...home.lights.map((l) => ({ key: `light:${l.id}`, label: `${l.name}${l.roomName ? ` · ${l.roomName}` : ''}`, kind: 'light' as const, id: l.id })),
   ];
   const target = targets.find((t) => t.key === targetKey) ?? targets[0];
   const targetScenes = target?.kind === 'group' ? home.scenes.filter((s) => s.groupId === target.id) : [];
 
-  const openCreate = () => {
-    setTargetKey(targets[0]?.key ?? '');
-    setCreate(true);
-  };
-
   const submit = async () => {
     if (!target) return;
     const spec: ScheduleSpec = {
-      name: name.trim() || `${target.label} ${action === 'scene' ? home.sceneById[sceneId]?.name ?? '' : action}`.slice(0, 32),
+      name: (name.trim() || `${target.label} ${action === 'scene' ? home.sceneById[sceneId]?.name ?? '' : action}`).slice(0, 32),
       time,
-      days: repeat === 'daily' ? undefined : repeat === 'weekdays' ? ['weekdays'] : repeat === 'weekends' ? ['weekends'] : repeat === 'custom' ? days : undefined,
+      days: repeat === 'weekdays' ? ['weekdays'] : repeat === 'weekends' ? ['weekends'] : repeat === 'custom' ? days : undefined,
       onceDate: repeat === 'once' ? onceDate : undefined,
       target: { kind: target.kind, id: target.id },
     };
@@ -73,7 +69,6 @@ export default function AutomationsView() {
     setSaving(true);
     try {
       await window.hue.createSchedule(spec);
-      toast('Automation saved on the bridge', 'success');
       setCreate(false);
       setName('');
       await load();
@@ -97,57 +92,39 @@ export default function AutomationsView() {
     try {
       await window.hue.deleteSchedule(s.id);
       setItems((list) => list?.filter((x) => x.id !== s.id) ?? null);
-      toast('Automation deleted');
     } catch (err) {
       toast((err as Error).message, 'error');
     }
   };
 
   return (
-    <div className="fade-in">
-      <div className="flex items-end justify-between mb-5">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Automations</h1>
-          <p className="text-sm text-muted mt-0.5">Time-based schedules stored on the bridge. They run even when this app is closed.</p>
-        </div>
-        <div className="flex gap-2">
-          <IconButton title="Refresh" onClick={load}>
-            <RefreshCw size={16} />
-          </IconButton>
-          <Button variant="primary" icon={<Plus size={15} />} onClick={openCreate} disabled={status.state !== 'connected'}>
-            New automation
-          </Button>
-        </div>
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted">Automations</h2>
+        <IconButton title="New automation" className="h-7 w-7" disabled={!connected} onClick={() => { setTargetKey(targets[0]?.key ?? ''); setCreate(true); }}>
+          <Plus size={15} />
+        </IconButton>
       </div>
-
-      {items === null && <div className="flex justify-center py-10"><Spinner /></div>}
-      {error && <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm mb-4">Could not load schedules: {error}</div>}
-      {items && !items.length && !error && <EmptyState icon={<CalendarClock size={40} />} title="No automations yet" hint='Try "Turn the office off at 23:00 on weekdays" — or ask the assistant to create one.' action={<Button variant="primary" onClick={openCreate}>Create one</Button>} />}
-      <div className="space-y-2">
+      {items === null && <div className="flex justify-center py-4"><Spinner /></div>}
+      {error && <div className="text-xs text-rose-400 px-1">{error}</div>}
+      {items && !items.length && !error && <div className="text-xs text-muted px-1">None yet.</div>}
+      <div className="space-y-1.5">
         {items?.map((s) => (
-          <div key={s.id} className={cx('surface rounded-xl px-4 py-3 flex items-center gap-4', s.status !== 'enabled' && 'opacity-60')}>
-            <div className="h-10 w-10 rounded-xl surface-2 flex items-center justify-center shrink-0">
-              <CalendarClock size={18} className="text-accent" />
-            </div>
+          <div key={s.id} className={cx('group surface rounded-xl px-3 py-2 flex items-center gap-2.5', s.status !== 'enabled' && 'opacity-60')}>
+            <CalendarClock size={15} className="text-accent shrink-0" />
             <div className="min-w-0 flex-1">
-              <div className="font-medium truncate">{s.name}</div>
-              <div className="text-xs text-muted truncate">
-                {s.when} → <span className="text-[var(--fg)]">{s.target?.name ?? 'Unknown target'}</span> · {s.action.summary}
-                {s.createdBy !== 'hue-pilot' && <span className="ml-2 rounded-md surface-2 px-1.5 py-0.5 text-[10px] uppercase">other app</span>}
-              </div>
+              <div className="text-sm font-medium truncate">{s.name}</div>
+              <div className="text-[11px] text-muted truncate">{s.when} · {s.target?.name ?? '?'} · {s.action.summary}</div>
             </div>
+            <button onClick={() => remove(s)} title="Delete" className="text-muted opacity-0 group-hover:opacity-100 hover:text-rose-400 transition-opacity">
+              <Trash2 size={14} />
+            </button>
             <Toggle checked={s.status === 'enabled'} onChange={(v) => toggle(s, v)} size="sm" />
-            <IconButton title="Delete" onClick={() => remove(s)} className="text-rose-400 hover:text-rose-400">
-              <Trash2 size={16} />
-            </IconButton>
           </div>
         ))}
       </div>
 
-      <Modal open={create} title="New automation" onClose={() => setCreate(false)} width="max-w-xl" footer={<><Button variant="ghost" onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" loading={saving} onClick={submit}>Save to bridge</Button></>}>
-        <Field label="Name" hint="Optional">
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={32} placeholder="e.g. Office off at night" />
-        </Field>
+      <Modal open={create} title="New automation" onClose={() => setCreate(false)} width="max-w-xl" footer={<><Button variant="ghost" onClick={() => setCreate(false)}>Cancel</Button><Button variant="primary" loading={saving} onClick={submit}>Save</Button></>}>
         <div className="grid grid-cols-2 gap-4">
           <Field label="Time">
             <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
@@ -158,7 +135,7 @@ export default function AutomationsView() {
               <option value="weekdays">Weekdays</option>
               <option value="weekends">Weekends</option>
               <option value="custom">Custom days</option>
-              <option value="once">Once, on a date</option>
+              <option value="once">Once</option>
             </Select>
           </Field>
         </div>
@@ -183,10 +160,10 @@ export default function AutomationsView() {
         </Field>
         <Field label="Action">
           <div className="flex flex-wrap gap-1.5">
-            <Chip active={action === 'on'} onClick={() => setAction('on')}>Turn on</Chip>
-            <Chip active={action === 'off'} onClick={() => setAction('off')}>Turn off</Chip>
-            <Chip active={action === 'brightness'} onClick={() => setAction('brightness')}>Set brightness</Chip>
-            {targetScenes.length > 0 && <Chip active={action === 'scene'} onClick={() => setAction('scene')}>Activate scene</Chip>}
+            <Chip active={action === 'on'} onClick={() => setAction('on')}>On</Chip>
+            <Chip active={action === 'off'} onClick={() => setAction('off')}>Off</Chip>
+            <Chip active={action === 'brightness'} onClick={() => setAction('brightness')}>Brightness</Chip>
+            {targetScenes.length > 0 && <Chip active={action === 'scene'} onClick={() => setAction('scene')}>Scene</Chip>}
           </div>
         </Field>
         {action === 'brightness' && (
@@ -197,13 +174,16 @@ export default function AutomationsView() {
         {action === 'scene' && (
           <Field label="Scene">
             <Select value={sceneId} onChange={(e) => setSceneId(e.target.value)}>
-              <option value="">Choose a scene…</option>
+              <option value="">Choose…</option>
               {targetScenes.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </Select>
           </Field>
         )}
+        <Field label="Name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={32} placeholder="Optional" />
+        </Field>
       </Modal>
     </div>
   );

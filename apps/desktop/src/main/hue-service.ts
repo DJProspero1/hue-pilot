@@ -36,6 +36,13 @@ export class HueService extends EventEmitter {
   private retryTimer: NodeJS.Timeout | null = null;
   private conn: BridgeConnection | null = null;
 
+  private attempt = 0;
+
+  /**
+   * Connects and keeps connecting: any failure schedules a retry with backoff (3 s → 30 s), and
+   * a session whose event stream is not open polls the bridge every 20 s instead of every 2 min,
+   * so the app keeps working even when the bridge refuses another stream client.
+   */
   async connect(conn: BridgeConnection): Promise<void> {
     this.disconnect();
     this.conn = conn;
@@ -43,15 +50,39 @@ export class HueService extends EventEmitter {
     this.setStatus({ state: 'connecting', stream: 'closed', host: conn.host, bridgeName: conn.name });
     try {
       await this.refresh();
+      this.attempt = 0;
       this.setStatus({ state: 'connected', stream: 'connecting', host: conn.host, bridgeName: this.home.bridge?.name ?? conn.name, lastUpdate: Date.now() });
       this.startStream();
-      this.pollTimer = setInterval(() => this.refresh().catch(() => undefined), 120_000);
+      this.schedulePoll();
     } catch (err) {
-      this.setStatus({ state: 'error', stream: 'closed', host: conn.host, bridgeName: conn.name, error: (err as Error).message });
+      this.attempt += 1;
+      const delay = Math.min(30_000, 3_000 * 2 ** Math.min(this.attempt - 1, 4));
+      this.setStatus({ state: 'error', stream: 'closed', host: conn.host, bridgeName: conn.name, error: `${(err as Error).message} — retrying in ${Math.round(delay / 1000)} s` });
       this.retryTimer = setTimeout(() => {
-        if (this.conn === conn && this.status.state === 'error') this.connect(conn).catch(() => undefined);
-      }, 15_000);
+        if (this.conn === conn) this.connect(conn).catch(() => undefined);
+      }, delay);
     }
+  }
+
+  /** Re-run the connection from scratch (fresh client and event stream). Safe to call any time. */
+  async reconnect(conn: BridgeConnection | null = this.conn): Promise<void> {
+    if (!conn) return;
+    this.attempt = 0;
+    await this.connect(conn);
+  }
+
+  private schedulePoll() {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    const ms = this.status.stream === 'open' ? 120_000 : 20_000;
+    this.pollTimer = setInterval(() => {
+      this.refresh().catch((err) => {
+        // The bridge went away: fall back to the connect/retry loop.
+        if (this.conn) {
+          this.setStatus({ ...this.status, state: 'error', error: (err as Error).message });
+          this.connect(this.conn).catch(() => undefined);
+        }
+      });
+    }, ms);
   }
 
   disconnect() {
@@ -145,7 +176,9 @@ export class HueService extends EventEmitter {
         if (applyEvents(this.resources, events)) this.scheduleRebuild();
       },
       (stream, err) => {
+        const was = this.status.stream;
         this.setStatus({ ...this.status, stream, error: stream === 'closed' && err ? err.message : undefined });
+        if ((was === 'open') !== (stream === 'open')) this.schedulePoll();
       },
     );
   }

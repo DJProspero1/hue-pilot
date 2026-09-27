@@ -56,7 +56,7 @@ export function Toggle({ checked, onChange, size = 'md', disabled, label }: { ch
       className={cx(
         'relative inline-flex shrink-0 items-center rounded-full transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
         dims,
-        checked ? 'bg-gradient-to-r from-accent to-accent-2' : 'bg-slate-300 dark:bg-slate-600',
+        checked ? 'bg-accent' : 'bg-black/15 dark:bg-white/15',
         disabled && 'opacity-50 cursor-not-allowed',
       )}
     >
@@ -130,7 +130,7 @@ export function Button({ variant = 'subtle', size = 'md', icon, loading, classNa
   const base = 'inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:opacity-50 disabled:cursor-not-allowed select-none';
   const sizes = { sm: 'h-8 px-3 text-xs', md: 'h-10 px-4 text-sm', lg: 'h-12 px-5 text-base' }[size];
   const variants = {
-    primary: 'bg-gradient-to-r from-accent to-accent-2 text-white shadow-md hover:brightness-110 active:scale-[0.98]',
+    primary: 'bg-accent text-[#1c1814] shadow-md hover:brightness-105 active:scale-[0.98]',
     subtle: 'surface-2 text-[var(--fg)] hover:brightness-110 active:scale-[0.98] border border-transparent hover:border-[var(--border-strong)]',
     ghost: 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-[var(--fg)]',
     outline: 'bg-transparent border border-[var(--border-strong)] hover:bg-black/5 dark:hover:bg-white/10 text-[var(--fg)]',
@@ -172,7 +172,7 @@ export function Card({ className, children, onClick, glow }: { className?: strin
 export function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex items-center justify-between mb-3 mt-1">
-      <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">{children}</h2>
+      <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-muted">{children}</h2>
       {action}
     </div>
   );
