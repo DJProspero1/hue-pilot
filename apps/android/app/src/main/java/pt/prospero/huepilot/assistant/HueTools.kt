@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -27,6 +28,9 @@ import kotlin.math.roundToInt
 import pt.prospero.huepilot.data.hue.AccessoryUi
 import pt.prospero.huepilot.data.hue.MotionAutomationUi
 import pt.prospero.huepilot.domain.MotionAutomations
+import pt.prospero.huepilot.data.hue.HueClient
+import pt.prospero.huepilot.data.hue.RoutineUi
+import pt.prospero.huepilot.domain.Routines
 
 /**
  * The assistant tool contract shared with the desktop app and the MCP server.
@@ -89,16 +93,21 @@ class HueTools(private val repo: HueRepository) {
             ), listOf("time", "target")))
         add(decl("delete_schedule", "Delete a schedule by id.", mapOf("id" to str("Schedule id from list_schedules.")), listOf("id")))
         add(decl("list_motion_automations", "List what each motion sensor and Hue Secure camera makes the lights do on motion (the bridge-side automations, one per sensor): which room, which scene on motion, what happens after no motion, time slots, and whether it only works when dark.", emptyMap(), emptyList()))
-        add(decl("set_motion_automation", "Create or replace the automation of a motion sensor or camera (runs on the bridge, app closed or not). Simple form: on_motion (a scene of that room, e.g. \"Bright\", or \"nothing\"), off_after_minutes, optional from/until clock window (outside it the sensor does nothing), only_when_dark. For different day/night behaviour pass slots instead. To only pause/resume an existing automation pass just sensor and enabled. When the user does not say, ask whether it should work only when dark.",
+        add(decl("set_motion_automation", "Create or replace the automation of a motion sensor or camera (runs on the bridge, app closed or not). Simple form: on_motion (a scene of that room, e.g. \"Bright\", or \"nothing\"), off_after_minutes, optional from/until clock window (outside it the sensor does nothing), darkness. For different day/night behaviour pass slots. Changing an existing rule keeps everything not mentioned (its time slots, rooms, darkness); a new on_motion scene goes to the slots that already recall a scene. To only pause/resume pass just sensor and enabled. When the user does not say, ask whether it should work only when dark.",
             mapOf(
                 "sensor" to str("Motion sensor or camera name."),
-                "room" to str("Room or zone whose lights it controls. Defaults to the existing automation's room."),
+                "room" to str("Room or zone whose lights it controls. Defaults to the existing automation's rooms."),
+                "rooms" to buildJsonObject { put("type", "array"); put("description", "Several rooms/zones to control at once (replaces room)."); putJsonObject("items") { put("type", "string") } },
+                "darkness" to enumOf("When the rule may act: \"any\" time; \"sunset_to_sunrise\" by the sun (with offsets); \"sensor\" when the sensor's own light reading is below dark_threshold_lux (the \"daylight sensitivity\" of the Hue app).", listOf("any", "sunset_to_sunrise", "sensor")),
+                "sunset_offset_minutes" to num("sunset_to_sunrise: start this many minutes after sunset (negative = before, default -30)."),
+                "sunrise_offset_minutes" to num("sunset_to_sunrise: stop this many minutes after sunrise (negative = before, default 30)."),
+                "dark_threshold_lux" to num("sensor: counts as dark below this many lux (default about 5)."),
                 "on_motion" to str("Scene name to activate when motion starts (must belong to the room), \"on\" for the room's brightest scene, or \"nothing\"."),
                 "off_after_minutes" to num("Minutes without motion before on_no_motion happens (default 5)."),
                 "on_no_motion" to str("\"off\" (default), \"nothing\", or a scene name."),
                 "from" to str("Start of the active window, HH:MM. Omit for all day."),
                 "until" to str("End of the active window, HH:MM."),
-                "only_when_dark" to bool("true = only between sunset and sunrise; false = any time of day."),
+                "only_when_dark" to bool("Shortcut: true = keep/enable a darkness condition (sunset to sunrise unless one is set), false = any time."),
                 "do_not_disturb" to bool("true = leave the lights alone when someone changed them by hand."),
                 "enabled" to bool("false pauses the automation, true resumes it."),
                 "name" to str("Optional name; defaults to the sensor name."),
@@ -117,6 +126,100 @@ class HueTools(private val repo: HueRepository) {
         add(decl("delete_motion_automation", "Remove the motion automation of a sensor or camera, so motion no longer changes any light.", mapOf("sensor" to str("Motion sensor or camera name (or the automation id from list_motion_automations).")), listOf("sensor")))
         add(decl("set_motion_sensing", "Switch motion sensing itself on or off for a motion sensor or a Hue Secure camera (off = it stops reporting motion; its automation then never fires).",
             mapOf("sensor" to str("Motion sensor or camera name."), "enabled" to bool("true = sensing on, false = off.")), listOf("sensor", "enabled")))
+        add(decl("set_sensor_settings", "Settings of a motion sensor or Hue Secure camera: motion sensing on/off, motion sensitivity, name, and the room it belongs to.",
+            mapOf(
+                "sensor" to str("Motion sensor or camera name."),
+                "enabled" to bool("Motion sensing on/off."),
+                "sensitivity" to str("\"low\", \"medium\", \"high\", or a number from 0 to the sensor's maximum (see get_sensor_readings). Motion sensors only."),
+                "name" to str("New name."),
+                "room" to str("Room to move the device into."),
+            ), listOf("sensor")))
+        add(decl("rename", "Rename a light, room, zone, scene, motion sensor or camera.",
+            mapOf(
+                "what" to enumOf("What to rename.", listOf("light", "room", "zone", "scene", "sensor", "camera")),
+                "name" to str("Current name."),
+                "new_name" to str("New name (max 32 characters)."),
+                "room" to str("For scenes and lights: the room, to disambiguate."),
+            ), listOf("what", "name", "new_name")))
+        add(decl("set_light_power_on_behavior", "What a light does when power returns (wall switch / power cut): \"default\" warm white at full brightness, \"power_loss\" (last state after a power cut only, off after a switch), \"last_state\", or \"custom\" with brightness and colour.",
+            mapOf(
+                "target" to str("Light name, or a room/zone name for all its lights."),
+                "mode" to enumOf("Power-on mode.", listOf("default", "power_loss", "last_state", "custom")),
+                "brightness" to num("custom: brightness 1-100."),
+                "color" to str("custom: colour name or hex."),
+                "color_temperature" to str("custom: warm/cool/neutral or Kelvin."),
+            ), listOf("target", "mode")))
+        add(decl("create_group", "Create a room (a light belongs to one room) or a zone (any lights, across rooms).",
+            mapOf(
+                "kind" to enumOf("room or zone.", listOf("room", "zone")),
+                "name" to str("Name."),
+                "lights" to buildJsonObject { put("type", "array"); put("description", "Light names to put in it."); putJsonObject("items") { put("type", "string") } },
+                "icon" to str("Room type / icon: living_room, kitchen, dining, bedroom, kids_bedroom, bathroom, nursery, recreation, office, gym, hallway, toilet, front_door, garage, terrace, garden, driveway, carport, home, downstairs, upstairs, top_floor, attic, guest_room, staircase, lounge, man_cave, computer, studio, music, tv, reading, closet, storage, laundry_room, balcony, porch, barbecue, pool, other."),
+            ), listOf("kind", "name")))
+        add(decl("update_group", "Change a room or zone: rename it, change its icon, add or remove lights, or replace its lights.",
+            mapOf(
+                "group" to str("Room or zone name."),
+                "new_name" to str("New name."),
+                "icon" to str("Room type / icon (see create_group)."),
+                "add_lights" to buildJsonObject { put("type", "array"); putJsonObject("items") { put("type", "string") } },
+                "remove_lights" to buildJsonObject { put("type", "array"); putJsonObject("items") { put("type", "string") } },
+                "lights" to buildJsonObject { put("type", "array"); put("description", "Replace the whole light list."); putJsonObject("items") { put("type", "string") } },
+            ), listOf("group")))
+        add(decl("delete_group", "Delete a room or zone (its lights are kept; a room's lights become unassigned).", mapOf("group" to str("Room or zone name.")), listOf("group")))
+        add(decl("create_scene", "Save a scene for a room or zone: by default the current look of its lights; optionally give per-light states.",
+            mapOf(
+                "name" to str("Scene name."),
+                "room" to str("Room or zone."),
+                "lights" to lightStatesSchema("Optional per-light states; lights not listed keep their current state."),
+                "speed" to num("Dynamic mode speed 0-1."),
+                "auto_dynamic" to bool("Start in dynamic mode when activated."),
+            ), listOf("name", "room")))
+        add(decl("update_scene", "Change a scene: rename, dynamic speed, auto-dynamic, change some lights' states, or re-capture the room's current look.",
+            mapOf(
+                "scene" to str("Scene name."),
+                "room" to str("The scene's room, to disambiguate."),
+                "new_name" to str("New name."),
+                "speed" to num("Dynamic mode speed 0-1."),
+                "auto_dynamic" to bool("Start in dynamic mode when activated."),
+                "lights" to lightStatesSchema("Per-light states to change."),
+                "from_current_state" to bool("Replace all light states with the current look."),
+            ), listOf("scene")))
+        add(decl("delete_scene", "Delete a scene.", mapOf("scene" to str("Scene name."), "room" to str("Room, to disambiguate.")), listOf("scene")))
+        add(decl("list_routines", "List wake-up and go-to-sleep routines (and other automations the Hue app manages, e.g. coming/leaving home).", emptyMap(), emptyList()))
+        add(decl("set_wake_up", "Create or change a wake-up routine: a sunrise that brightens the room over some minutes up to a brightness at a time on chosen days, optionally switching off later. Updates the routine with the same name, or the only one for those rooms.",
+            mapOf(
+                "rooms" to buildJsonObject { put("type", "array"); put("description", "Rooms/zones."); putJsonObject("items") { put("type", "string") } },
+                "time" to str("Alarm time HH:MM (the sunrise ends then)."),
+                "days" to buildJsonObject { put("type", "array"); put("description", "mon..sun, weekdays, weekends; omit = every day."); putJsonObject("items") { put("type", "string") } },
+                "fade_minutes" to num("Sunrise length (default 30)."),
+                "end_brightness" to num("1-100 (default 100)."),
+                "turn_off_after_minutes" to num("Switch off this many minutes after the alarm; 0 = stay on."),
+                "enabled" to bool("false pauses it."),
+                "name" to str("Routine name."),
+            ), listOf("rooms", "time")))
+        add(decl("set_go_to_sleep", "Create or change a go-to-sleep routine: the room dims over some minutes at a time on chosen days, ending in nightlight or off.",
+            mapOf(
+                "rooms" to buildJsonObject { put("type", "array"); put("description", "Rooms/zones."); putJsonObject("items") { put("type", "string") } },
+                "time" to str("HH:MM when the fade starts."),
+                "days" to buildJsonObject { put("type", "array"); putJsonObject("items") { put("type", "string") } },
+                "fade_minutes" to num("Default 30."),
+                "end" to enumOf("Default nightlight.", listOf("nightlight", "off")),
+                "enabled" to bool("false pauses it."),
+                "name" to str("Routine name."),
+            ), listOf("rooms", "time")))
+        add(decl("delete_routine", "Delete a wake-up / go-to-sleep routine by name or id (see list_routines).", mapOf("routine" to str("Routine name or id.")), listOf("routine")))
+    }
+
+    private fun lightStatesSchema(description: String): JsonObject = buildJsonObject {
+        put("type", "array")
+        put("description", description)
+        putJsonObject("items") {
+            put("type", "object")
+            putJsonObject("properties") {
+                put("light", str("Light name.")); put("on", bool("On/off.")); put("brightness", num("1-100.")); put("color", str("Colour name or hex.")); put("color_temperature", str("warm/cool/neutral or Kelvin."))
+            }
+            putJsonArray("required") { add(JsonPrimitive("light")) }
+        }
     }
 
     /** Gemini-style `functionDeclarations` view of [specs] (also the neutral JSON shape). */
@@ -161,6 +264,19 @@ class HueTools(private val repo: HueRepository) {
             "set_motion_automation" -> setMotionAutomation(args)
             "delete_motion_automation" -> deleteMotionAutomation(args)
             "set_motion_sensing" -> setMotionSensing(args)
+            "set_sensor_settings" -> setSensorSettings(args)
+            "rename" -> renameThing(args)
+            "set_light_power_on_behavior" -> setPowerOn(args)
+            "create_group" -> createGroup(args)
+            "update_group" -> updateGroup(args)
+            "delete_group" -> deleteGroup(args)
+            "create_scene" -> createScene(args)
+            "update_scene" -> updateScene(args)
+            "delete_scene" -> deleteScene(args)
+            "list_routines" -> listRoutines()
+            "set_wake_up" -> setRoutine("wake_up", args)
+            "set_go_to_sleep" -> setRoutine("go_to_sleep", args)
+            "delete_routine" -> deleteRoutine(args)
             else -> err("unknown_tool", "Unknown tool: $name")
         }
     } catch (e: HueException) {
@@ -186,6 +302,7 @@ class HueTools(private val repo: HueRepository) {
                 "set_camera_motion_detection" -> "Camera motion detection updated"
                 "list_schedules" -> "Listed schedules"
                 "list_motion_automations" -> "Listed motion automations"
+                "list_routines" -> "Listed routines"
                 else -> name.replace('_', ' ')
             }
         }
@@ -433,7 +550,10 @@ class HueTools(private val repo: HueRepository) {
         })
         put("sensors", buildJsonArray {
             for (a in snap.accessories) {
-                if (a.motionId != null) add(buildJsonObject { put("device", a.name); put("type", if (a.isCamera) "camera_motion" else "motion"); put("value", a.motion ?: false); put("unit", "boolean"); put("updated", JsonPrimitive(a.motionUpdated)) })
+                if (a.motionId != null) add(buildJsonObject {
+                    put("device", a.name); put("type", if (a.isCamera) "camera_motion" else "motion"); put("value", a.motion ?: false); put("unit", "boolean"); put("updated", JsonPrimitive(a.motionUpdated))
+                    put("enabled", a.motionEnabled ?: true); put("sensitivity", a.motionSensitivity?.let { JsonPrimitive(it) } ?: JsonNull); put("sensitivity_max", a.motionSensitivityMax?.let { JsonPrimitive(it) } ?: JsonNull); put("room", JsonPrimitive(a.roomName))
+                })
                 a.temperatureC?.let { add(buildJsonObject { put("device", a.name); put("type", "temperature"); put("value", (it * 10).roundToInt() / 10.0); put("unit", "°C"); put("updated", JsonPrimitive(a.temperatureUpdated)) }) }
                 a.lux?.let { add(buildJsonObject { put("device", a.name); put("type", "light_level"); put("value", it.roundToInt()); put("unit", "lux"); put("updated", JsonPrimitive(a.lightLevelUpdated)) }) }
                 a.batteryLevel?.let { add(buildJsonObject { put("device", a.name); put("type", "battery"); put("value", it); put("unit", "%"); put("updated", JsonNull) }) }
@@ -578,7 +698,9 @@ class HueTools(private val repo: HueRepository) {
 
     private fun automationJson(a: MotionAutomationUi): JsonObject = buildJsonObject {
         put("id", a.id); put("name", a.name); put("sensor", a.sourceName); put("kind", a.sourceKind); put("enabled", a.enabled); put("status", JsonPrimitive(a.status))
-        put("rooms", namesArray(a.whereNames)); put("only_when_dark", a.onlyWhenDark)
+        put("rooms", namesArray(a.whereNames)); put("only_when_dark", a.onlyWhenDark); put("darkness", a.darkness); put("darkness_details", a.darknessDetails)
+        (a.darknessSpec as? MotionAutomations.Darkness.SunsetToSunrise)?.let { put("sunset_offset_minutes", it.sunsetOffsetMinutes); put("sunrise_offset_minutes", it.sunriseOffsetMinutes) }
+        (a.darknessSpec as? MotionAutomations.Darkness.Sensor)?.let { put("dark_threshold_lux", (MotionAutomations.lightLevelToLux(it.darkThreshold) * 10).roundToInt() / 10.0) }
         put("slots", buildJsonArray {
             for (s in a.slots) add(buildJsonObject {
                 put("from", s.start); put("on_motion", actLabel(s.onMotion, s.onMotionSceneId)); put("off_after_minutes", s.noMotionAfterMinutes)
@@ -626,7 +748,7 @@ class HueTools(private val repo: HueRepository) {
         val motionId = source.motionId ?: return err("unsupported", "${source.name} has no motion service")
         val existing = snap.motionAutomations.firstOrNull { it.sourceDeviceId == source.deviceId }
         val enabledArg = args.bool("enabled")
-        val onlyEnable = enabledArg != null && listOf("room", "on_motion", "off_after_minutes", "on_no_motion", "from", "until", "only_when_dark", "do_not_disturb", "slots").none { args.present(it) }
+        val onlyEnable = enabledArg != null && listOf("room", "rooms", "on_motion", "off_after_minutes", "on_no_motion", "from", "until", "only_when_dark", "darkness", "sunset_offset_minutes", "sunrise_offset_minutes", "dark_threshold_lux", "do_not_disturb", "slots", "name").none { args.present(it) }
         if (onlyEnable && existing != null) {
             // The bridge refuses an enabled-only PUT ("The instance doesn't support triggers"): send the rule back with it.
             repo.updateBehaviorInstance(existing.id, buildJsonObject { put("enabled", enabledArg); putJsonObject("metadata") { put("name", existing.name) }; put("configuration", existing.configuration) })
@@ -634,10 +756,10 @@ class HueTools(private val repo: HueRepository) {
         }
 
         var where: List<Pair<String, String>> = existing?.let { it.whereIds.zip(it.whereKinds) } ?: emptyList()
-        args.str("room")?.let { roomQ ->
-            val g = matchGroup(roomQ)
-            val group = (g as? MatchResult.Found)?.item ?: return matchFail(g, "room", roomQ) { it.name }
-            where = listOf(group.id to group.kind.rtype)
+        if (args.present("rooms") || args.present("room")) {
+            val (resolved, e) = resolveRooms(args)
+            if (resolved == null) return e!!
+            where = resolved
         }
         if (where.isEmpty()) return err("invalid_argument", "Which room or zone should ${source.name} control? Pass room.")
         val group = snap.group(where[0].first) ?: return err("not_found", "The room of this automation no longer exists; pass room.")
@@ -656,6 +778,24 @@ class HueTools(private val repo: HueRepository) {
                     if (onN == null) return e2!!
                     slots.add(MotionAutomations.Slot(MotionAutomations.parseTime(o.str("from")), onM, o.num("off_after_minutes")?.roundToInt() ?: defaultAfter, onN, dnd))
                 }
+            } else if (existing != null && !args.present("from") && !args.present("until")) {
+                // Keep the existing time slots; apply what was mentioned. A scene for on_motion goes to the
+                // slots that already recall a scene (the "do nothing by day" slots are left alone).
+                val onM = args.str("on_motion")?.let { q -> val (a, e) = parseAction(q, group, MotionAutomations.Action.Nothing, false); if (a == null) return e!!; a }
+                val onN = args.str("on_no_motion")?.let { q -> val (a, e) = parseAction(q, group, MotionAutomations.Action.Off, true); if (a == null) return e!!; a }
+                val after = args.num("off_after_minutes")?.roundToInt()
+                val sceneSlots = existing.slots.filter { it.onMotion == "scene" }
+                val targets = (if (sceneSlots.isNotEmpty()) sceneSlots else listOfNotNull(existing.slots.lastOrNull())).toSet()
+                for (sl in existing.slots) {
+                    slots.add(MotionAutomations.Slot(
+                        MotionAutomations.parseTime(sl.start),
+                        if (onM != null && (sl in targets || existing.slots.size == 1)) onM else fromUi(sl.onMotion, sl.onMotionSceneId),
+                        after ?: sl.noMotionAfterMinutes,
+                        onN ?: fromUi(sl.onNoMotion, sl.onNoMotionSceneId),
+                        args.bool("do_not_disturb") ?: sl.doNotDisturb,
+                    ))
+                }
+                if (slots.isEmpty()) return err("invalid_argument", "Say what motion should do: a scene for on_motion and/or \"off\" for on_no_motion.")
             } else {
                 val first = existing?.slots?.firstOrNull()
                 val (onM, e1) = parseAction(args.str("on_motion"), group, first?.let { fromUi(it.onMotion, it.onMotionSceneId) } ?: MotionAutomations.Action.Nothing, false)
@@ -672,19 +812,21 @@ class HueTools(private val repo: HueRepository) {
         }
         if (slots.map { it.start.minutes }.toSet().size != slots.size) return err("invalid_argument", "from and until must be different times.")
 
-        val onlyWhenDark = args.bool("only_when_dark") ?: existing?.onlyWhenDark ?: false
+        val (darkness, darkErr) = darknessFromArgs(args, existing?.darknessSpec ?: MotionAutomations.Darkness.AnyTime, source)
+        if (darkness == null) return darkErr!!
+        val onlyWhenDark = darkness !is MotionAutomations.Darkness.AnyTime
         val motionType = source.motionType ?: if (source.isCamera) "camera_motion" else "motion"
-        val spec = MotionAutomations.Spec(source.deviceId, motionId, motionType, where, onlyWhenDark, slots)
+        val spec = MotionAutomations.Spec(source.deviceId, motionId, motionType, where, darkness, slots)
         val name = args.str("name") ?: existing?.name ?: source.name
         val enabled = enabledArg ?: existing?.enabled ?: true
         val id = if (existing != null) {
-            repo.updateBehaviorInstance(existing.id, MotionAutomations.instanceBody(spec, name, enabled, if (onlyWhenDark) existing.lightLevel else null, forUpdate = true))
+            repo.updateBehaviorInstance(existing.id, MotionAutomations.instanceBody(spec, name, enabled, forUpdate = true))
             existing.id
         } else repo.createBehaviorInstance(MotionAutomations.instanceBody(spec, name, enabled))
-        val summary = MotionAutomations.describe(slots, onlyWhenDark) { sid -> snap.scene(sid)?.name ?: "scene" }
+        val summary = MotionAutomations.describe(slots, darkness) { sid -> snap.scene(sid)?.name ?: "scene" }
         val roomNames = where.map { snap.group(it.first)?.name ?: "room" }
         return ok("${source.name} → ${roomNames.joinToString(", ")}: $summary${if (enabled) "" else " (paused)"}", buildJsonObject {
-            put("id", id); put("sensor", source.name); put("rooms", namesArray(roomNames)); put("enabled", enabled); put("only_when_dark", onlyWhenDark); put("summary", summary)
+            put("id", id); put("sensor", source.name); put("rooms", namesArray(roomNames)); put("enabled", enabled); put("only_when_dark", onlyWhenDark); put("darkness", MotionAutomations.describeDarkness(darkness)); put("summary", summary)
         })
     }
 
@@ -710,6 +852,456 @@ class HueTools(private val repo: HueRepository) {
         return ok("${source.name}: motion sensing ${if (enabled) "on" else "off"}", buildJsonObject { put("sensor", source.name); put("kind", source.kind); put("enabled", enabled) })
     }
 
+    // ------------------------------------------------------------------ bridge helpers
+
+    private fun bridge(): HueClient = repo.client.value ?: throw HueException("The bridge is not connected")
+
+    private suspend fun putResource(type: String, id: String, body: JsonObject) {
+        bridge().put(type, id, body)
+        repo.refresh()
+    }
+
+    private suspend fun postResource(type: String, body: JsonObject): String {
+        val refs = bridge().post(type, body)
+        repo.refresh()
+        return refs.firstOrNull()?.get("rid")?.jsonPrimitive?.content ?: ""
+    }
+
+    private suspend fun deleteResource(type: String, id: String) {
+        bridge().delete(type, id)
+        repo.refresh()
+    }
+
+    private fun strings(v: JsonElement?): List<String> = when (v) {
+        is JsonArray -> v.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.filter { it.isNotBlank() }
+        is JsonPrimitive -> v.contentOrNull?.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: emptyList()
+        else -> emptyList()
+    }
+
+    private fun resolveRooms(args: JsonObject, key: String = "rooms"): Pair<List<Pair<String, String>>?, JsonObject?> {
+        val list = strings(args[key]).ifEmpty { strings(args["room"]) }
+        val out = ArrayList<Pair<String, String>>()
+        for (q in list) {
+            val g = matchGroup(q)
+            val group = (g as? MatchResult.Found)?.item ?: return null to matchFail(g, "room", q) { it.name }
+            if (out.none { it.first == group.id }) out.add(group.id to group.kind.rtype)
+        }
+        return out to null
+    }
+
+    private fun darknessFromArgs(args: JsonObject, current: MotionAutomations.Darkness, source: AccessoryUi): Pair<MotionAutomations.Darkness?, JsonObject?> {
+        val mode = args.str("darkness")?.trim()?.lowercase()?.replace(Regex("[\\s-]+"), "_") ?: ""
+        val sunset = args.num("sunset_offset_minutes")
+        val sunrise = args.num("sunrise_offset_minutes")
+        val lux = args.num("dark_threshold_lux")
+        val only = args.bool("only_when_dark")
+        val wanted: String = when {
+            mode.isNotEmpty() -> when {
+                mode in setOf("any", "always", "none", "off", "never") -> "any"
+                mode.contains("sun") || mode == "night" || mode == "dark" -> "sunset_to_sunrise"
+                mode.contains("sensor") || mode.contains("daylight") || mode.contains("light_level") || mode.contains("lux") -> "sensor"
+                else -> return null to err("invalid_argument", "darkness must be any, sunset_to_sunrise or sensor.")
+            }
+            lux != null -> "sensor"
+            sunset != null || sunrise != null -> "sunset_to_sunrise"
+            only == false -> "any"
+            only == true -> if (current is MotionAutomations.Darkness.AnyTime) "sunset_to_sunrise" else current.mode
+            else -> current.mode
+        }
+        return when (wanted) {
+            "any" -> MotionAutomations.Darkness.AnyTime to null
+            "sunset_to_sunrise" -> {
+                val cur = current as? MotionAutomations.Darkness.SunsetToSunrise
+                MotionAutomations.Darkness.SunsetToSunrise((sunset ?: cur?.sunsetOffsetMinutes?.toDouble() ?: -30.0).roundToInt(), (sunrise ?: cur?.sunriseOffsetMinutes?.toDouble() ?: 30.0).roundToInt()) to null
+            }
+            else -> {
+                val cur = current as? MotionAutomations.Darkness.Sensor
+                val serviceId = cur?.lightLevelServiceId ?: source.lightLevelId
+                    ?: return null to err("unsupported", "${source.name} has no light-level sensor, so it cannot decide darkness itself. Use darkness \"sunset_to_sunrise\".")
+                MotionAutomations.Darkness.Sensor(serviceId, cur?.lightLevelType ?: "light_level", lux?.let { MotionAutomations.luxToLightLevel(it) } ?: cur?.darkThreshold ?: MotionAutomations.DEFAULT_DARK_THRESHOLD, cur?.offset ?: MotionAutomations.DEFAULT_DARK_OFFSET) to null
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ routines
+
+    private fun routineJson(r: RoutineUi): JsonObject = buildJsonObject {
+        put("id", r.id); put("name", r.name); put("kind", r.kind); put("enabled", r.enabled); put("status", JsonPrimitive(r.status))
+        put("rooms", namesArray(r.whereNames)); put("time", JsonPrimitive(r.time)); put("days", JsonPrimitive(r.days?.let { Routines.describeDays(it) }))
+        put("fade_minutes", r.fadeMinutes?.let { JsonPrimitive(it) } ?: JsonNull); put("end_brightness", r.endBrightness?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("turn_off_after_minutes", r.turnOffAfterMinutes?.let { JsonPrimitive(it) } ?: JsonNull); put("end", JsonPrimitive(r.endState?.let { if (it == "turn_off") "off" else it }))
+        put("summary", r.summary)
+    }
+
+    private fun listRoutines(): JsonObject = buildJsonObject {
+        put("ok", true)
+        put("routines", buildJsonArray { for (r in snap.routines) add(routineJson(r)) })
+    }
+
+    private fun resolveRoutine(q: String): MatchResult<RoutineUi> {
+        snap.routines.firstOrNull { it.id == q.trim() }?.let { return MatchResult.Found(it) }
+        val n = q.trim().lowercase()
+        val hits = snap.routines.filter { r -> val rn = r.name.lowercase(); rn == n || rn.startsWith(n) || rn.contains(n) }
+        return when (hits.size) { 0 -> MatchResult.NotFound(snap.routines); 1 -> MatchResult.Found(hits[0]); else -> MatchResult.Ambiguous(hits) }
+    }
+
+    private suspend fun setRoutine(kind: String, args: JsonObject): JsonObject {
+        val (rooms, roomErr) = resolveRooms(args)
+        if (rooms == null) return roomErr!!
+        val sameKind = snap.routines.filter { it.kind == kind }
+        var existing = args.str("name")?.let { n -> sameKind.firstOrNull { it.name.equals(n.trim(), ignoreCase = true) } }
+        if (existing == null && rooms.isNotEmpty()) {
+            val key = rooms.map { it.first }.sorted().joinToString(",")
+            val hits = sameKind.filter { it.whereIds.sorted().joinToString(",") == key }
+            if (hits.size == 1) existing = hits[0]
+        }
+        if (rooms.isEmpty() && existing == null) return err("invalid_argument", "rooms is required.")
+        val time = try {
+            args.str("time")?.let { MotionAutomations.parseTime(it) } ?: existing?.time?.let { MotionAutomations.parseTime(it) } ?: return err("invalid_argument", "time is required (HH:MM).")
+        } catch (e: IllegalArgumentException) { return err("invalid_argument", e.message ?: "invalid time") }
+        val days = try {
+            if (args.present("days")) Routines.parseDays(strings(args["days"])) else existing?.days?.takeIf { it.isNotEmpty() } ?: Routines.parseDays(null)
+        } catch (e: IllegalArgumentException) { return err("invalid_argument", e.message ?: "invalid days") }
+        val endRaw = args.str("end")?.lowercase() ?: ""
+        val turnOffArg = args.num("turn_off_after_minutes")
+        val spec = Routines.Spec(
+            kind = kind,
+            where = if (rooms.isNotEmpty()) rooms else existing!!.whereIds.zip(existing.whereKinds),
+            time = time,
+            days = days,
+            fadeMinutes = args.num("fade_minutes")?.roundToInt() ?: existing?.fadeMinutes ?: 30,
+            endBrightness = if (kind == "wake_up") (args.num("end_brightness")?.roundToInt()?.coerceIn(1, 100) ?: existing?.endBrightness ?: 100) else null,
+            turnOffAfterMinutes = if (kind == "wake_up") (if (turnOffArg != null) turnOffArg.roundToInt().takeIf { it > 0 } else existing?.turnOffAfterMinutes) else null,
+            endState = if (kind == "go_to_sleep") (if (endRaw.isNotEmpty()) (if (endRaw.contains("off")) "turn_off" else "nightlight") else existing?.endState ?: "nightlight") else null,
+        )
+        val roomNames = spec.where.map { snap.group(it.first)?.name ?: "room" }
+        val name = args.str("name") ?: existing?.name ?: (if (kind == "wake_up") "Wake up ${roomNames[0]}" else "Go to sleep ${roomNames[0]}")
+        val enabled = args.bool("enabled") ?: existing?.enabled ?: true
+        val id = if (existing != null) {
+            repo.updateBehaviorInstance(existing.id, Routines.body(spec, name, enabled, forUpdate = true))
+            existing.id
+        } else repo.createBehaviorInstance(Routines.body(spec, name, enabled))
+        return ok("$name → ${roomNames.joinToString(", ")}: ${Routines.describe(spec)}${if (enabled) "" else " (paused)"}", buildJsonObject {
+            put("id", id); put("name", name); put("rooms", namesArray(roomNames)); put("summary", Routines.describe(spec)); put("enabled", enabled)
+        })
+    }
+
+    private suspend fun deleteRoutine(args: JsonObject): JsonObject {
+        val q = args.str("routine") ?: throw IllegalArgumentException("routine is required")
+        val res = resolveRoutine(q)
+        val r = (res as? MatchResult.Found)?.item ?: return matchFail(res, "routine", q) { "${it.name} (${it.kind})" }
+        repo.deleteBehaviorInstance(r.id)
+        return ok("Routine \"${r.name}\" deleted.", buildJsonObject { put("id", r.id) })
+    }
+
+    // ------------------------------------------------------------------ sensor settings, rename, power-on
+
+    private fun sensitivityFromArgs(raw: String?, max: Int): Int? {
+        val s = raw?.trim()?.lowercase() ?: return null
+        if (s.isEmpty()) return null
+        s.toDoubleOrNull()?.let { return it.roundToInt().coerceIn(0, max) }
+        return when {
+            s.startsWith("low") || s.startsWith("very low") || s.startsWith("min") -> 0
+            s.startsWith("med") || s.startsWith("mid") || s.startsWith("normal") -> max / 2
+            s.startsWith("high") || s.startsWith("very high") || s.startsWith("max") -> max
+            else -> null
+        }
+    }
+
+    private suspend fun setSensorSettings(args: JsonObject): JsonObject {
+        val q = args.str("sensor") ?: throw IllegalArgumentException("sensor is required")
+        val res = resolveMotionSource(q)
+        val source = (res as? MatchResult.Found)?.item ?: return matchFail(res, "motion sensor or camera", q) { "${it.name} (${it.kind})" }
+        val motionId = source.motionId ?: return err("unsupported", "${source.name} has no motion service")
+        val done = ArrayList<String>()
+        args.bool("enabled")?.let { enabled ->
+            repo.setMotionEnabled(motionId, enabled, source.motionType ?: if (source.isCamera) "camera_motion" else "motion")
+            done.add("motion sensing ${if (enabled) "on" else "off"}")
+        }
+        args.str("sensitivity")?.let { raw ->
+            if (source.isCamera) return err("unsupported", "${source.name} has no sensitivity setting (cameras do not).")
+            val max = source.motionSensitivityMax ?: 2
+            val value = sensitivityFromArgs(raw, max) ?: return err("invalid_argument", "sensitivity must be low, medium, high or 0-$max.")
+            putResource("motion", motionId, buildJsonObject { putJsonObject("sensitivity") { put("sensitivity", value) } })
+            done.add("sensitivity $value/$max")
+        }
+        args.str("name")?.let { n ->
+            repo.renameDevice(source.deviceId, n.trim().take(32))
+            done.add("renamed to \"${n.trim().take(32)}\"")
+        }
+        args.str("room")?.let { roomQ ->
+            val g = matchGroup(roomQ)
+            val group = (g as? MatchResult.Found)?.item ?: return matchFail(g, "room", roomQ) { it.name }
+            if (group.kind.rtype != "room") return err("invalid_argument", "Devices live in rooms, not zones.")
+            val current = snap.rooms.firstOrNull { source.deviceId in it.deviceIds }
+            if (current != null && current.id != group.id) putResource("room", current.id, buildJsonObject { putJsonArray("children") { for (d in current.deviceIds.filter { it != source.deviceId }) add(buildJsonObject { put("rid", d); put("rtype", "device") }) } })
+            if (current == null || current.id != group.id) putResource("room", group.id, buildJsonObject { putJsonArray("children") { for (d in group.deviceIds + source.deviceId) add(buildJsonObject { put("rid", d); put("rtype", "device") }) } })
+            done.add("moved to ${group.name}")
+        }
+        if (done.isEmpty()) return err("invalid_argument", "Give enabled, sensitivity, name or room.")
+        return ok("${source.name}: ${done.joinToString(", ")}")
+    }
+
+    private suspend fun renameThing(args: JsonObject): JsonObject {
+        val what = args.str("what")?.lowercase() ?: throw IllegalArgumentException("what is required")
+        val newName = args.str("new_name")?.trim()?.take(32) ?: return err("invalid_argument", "new_name is required.")
+        val name = args.str("name") ?: throw IllegalArgumentException("name is required")
+        return when (what) {
+            "light" -> {
+                val res = matchLight(name, args.str("room"))
+                val l = (res as? MatchResult.Found)?.item ?: return matchFail(res, "light", name) { it.name }
+                repo.renameLight(l.id, newName)
+                ok("Light \"${l.name}\" renamed to \"$newName\".")
+            }
+            "room", "zone" -> {
+                val res = matchGroup(name)
+                val g = (res as? MatchResult.Found)?.item ?: return matchFail(res, "room", name) { it.name }
+                putResource(g.kind.rtype, g.id, buildJsonObject { putJsonObject("metadata") { put("name", newName) } })
+                ok("${g.name} renamed to \"$newName\".")
+            }
+            "scene" -> {
+                val res = matchScene(name, args.str("room"))
+                val sc = (res as? MatchResult.Found)?.item ?: return matchFail(res, "scene", name) { "${it.name} (${it.groupName})" }
+                repo.renameScene(sc.id, newName)
+                ok("Scene \"${sc.name}\" renamed to \"$newName\".")
+            }
+            "sensor", "camera", "device" -> {
+                val res = resolveMotionSource(name)
+                val src = (res as? MatchResult.Found)?.item ?: return matchFail(res, "motion sensor or camera", name) { "${it.name} (${it.kind})" }
+                repo.renameDevice(src.deviceId, newName)
+                ok("${src.name} renamed to \"$newName\".")
+            }
+            else -> err("invalid_argument", "what must be light, room, zone, scene, sensor or camera.")
+        }
+    }
+
+    private suspend fun setPowerOn(args: JsonObject): JsonObject {
+        val target = args.str("target") ?: throw IllegalArgumentException("target is required")
+        val lights: List<LightUi> = when (val g = matchGroup(target)) {
+            is MatchResult.Found -> g.item.lights
+            is MatchResult.Ambiguous -> return matchFail(g, "room", target) { it.name }
+            is MatchResult.NotFound -> when (val l = matchLight(target, null)) {
+                is MatchResult.Found -> listOf(l.item)
+                else -> return matchFail(l, "light", target) { it.name }
+            }
+        }
+        if (lights.isEmpty()) return err("not_found", "No lights in $target.")
+        val mode = args.str("mode")?.lowercase()?.replace(Regex("[\\s-]+"), "_") ?: ""
+        val preset = when {
+            mode == "default" || mode == "safety" -> "safety"
+            mode.contains("power") -> "powerfail"
+            mode.contains("last") -> "last_on_state"
+            mode == "custom" -> "custom"
+            else -> return err("invalid_argument", "mode must be default, power_loss, last_state or custom.")
+        }
+        var describeTxt = when (preset) { "safety" -> "warm white, full brightness"; "powerfail" -> "last state after a power cut, off after the switch"; "last_on_state" -> "last state"; else -> "custom" }
+        for (l in lights) {
+            val body = if (preset != "custom") buildJsonObject { putJsonObject("powerup") { put("preset", preset) } } else {
+                val d = parseDesired(args)
+                describeTxt = "custom (${listOfNotNull(d.brightness?.let { "${it.roundToInt()}%" }, d.label).joinToString(", ").ifEmpty { "previous state" }})"
+                buildJsonObject {
+                    putJsonObject("powerup") {
+                        put("preset", "custom")
+                        putJsonObject("on") { put("mode", "on"); putJsonObject("on") { put("on", true) } }
+                        if (d.brightness != null) putJsonObject("dimming") { put("mode", "dimming"); putJsonObject("dimming") { put("brightness", d.brightness.roundToInt().coerceIn(1, 100)) } } else putJsonObject("dimming") { put("mode", "previous") }
+                        when {
+                            d.mirek != null -> putJsonObject("color") { put("mode", "color_temperature"); putJsonObject("color_temperature") { put("mirek", d.mirek) } }
+                            d.xy != null -> putJsonObject("color") { put("mode", "color"); putJsonObject("color") { putJsonObject("xy") { put("x", d.xy.x); put("y", d.xy.y) } } }
+                            else -> putJsonObject("color") { put("mode", "previous") }
+                        }
+                    }
+                }
+            }
+            bridge().put("light", l.id, body)
+        }
+        repo.refresh()
+        return ok("Power-on behaviour of ${if (lights.size == 1) lights[0].name else "${lights.size} lights in $target"}: $describeTxt.")
+    }
+
+    // ------------------------------------------------------------------ rooms and zones
+
+    private fun resolveLightList(v: JsonElement?, roomHint: String?): Pair<List<LightUi>?, JsonObject?> {
+        val out = ArrayList<LightUi>()
+        for (n in strings(v)) {
+            val res = matchLight(n, roomHint)
+            val l = (res as? MatchResult.Found)?.item ?: return null to matchFail(res, "light", n) { it.name }
+            if (out.none { it.id == l.id }) out.add(l)
+        }
+        return out to null
+    }
+
+    private suspend fun createGroup(args: JsonObject): JsonObject {
+        val kind = if (args.str("kind")?.lowercase() == "zone") "zone" else "room"
+        val name = args.str("name")?.trim()?.take(32) ?: return err("invalid_argument", "name is required.")
+        val (lights, e) = resolveLightList(args["lights"], null)
+        if (lights == null) return e!!
+        if (kind == "room") {
+            val taken = lights.filter { it.roomName != null }
+            if (taken.isNotEmpty()) return err("invalid_argument", "A light belongs to one room. Already placed: ${taken.joinToString(", ") { "${it.name} (${it.roomName})" }}. Remove them from their room first, or make a zone.")
+        }
+        val archetype = args.str("icon")?.trim()?.lowercase()?.replace(Regex("[\\s-]+"), "_") ?: "other"
+        val body = buildJsonObject {
+            put("type", kind)
+            putJsonObject("metadata") { put("name", name); put("archetype", archetype) }
+            putJsonArray("children") { for (l in lights) add(buildJsonObject { put("rid", if (kind == "room") (l.deviceId ?: l.id) else l.id); put("rtype", if (kind == "room") "device" else "light") }) }
+        }
+        val id = postResource(kind, body)
+        return ok("${if (kind == "zone") "Zone" else "Room"} \"$name\" created with ${lights.size} light${if (lights.size == 1) "" else "s"}.", buildJsonObject { put("id", id) })
+    }
+
+    private suspend fun updateGroup(args: JsonObject): JsonObject {
+        val q = args.str("group") ?: throw IllegalArgumentException("group is required")
+        val res = matchGroup(q)
+        val group = (res as? MatchResult.Found)?.item ?: return matchFail(res, "room", q) { it.name }
+        val done = ArrayList<String>()
+        val newName = args.str("new_name")?.trim()?.take(32)
+        val icon = args.str("icon")?.trim()?.lowercase()?.replace(Regex("[\\s-]+"), "_")
+        val (replace, e1) = resolveLightList(args["lights"], null); if (replace == null) return e1!!
+        val (add, e2) = resolveLightList(args["add_lights"], null); if (add == null) return e2!!
+        val (remove, e3) = resolveLightList(args["remove_lights"], group.name); if (remove == null) return e3!!
+        val touchLights = replace.isNotEmpty() || add.isNotEmpty() || remove.isNotEmpty() || (args["lights"] is JsonArray)
+        val body = buildJsonObject {
+            if (newName != null || icon != null) {
+                putJsonObject("metadata") { if (newName != null) put("name", newName); if (icon != null) put("archetype", icon) }
+                if (newName != null) done.add("renamed to \"$newName\"")
+                if (icon != null) done.add("icon $icon")
+            }
+            if (touchLights) {
+                var ids = if (args["lights"] is JsonArray) replace.map { it.id }.toMutableList() else group.lights.map { it.id }.toMutableList()
+                for (l in add) if (l.id !in ids) ids.add(l.id)
+                val removeIds = remove.map { it.id }.toSet()
+                ids = ids.filter { it !in removeIds }.toMutableList()
+                if (group.kind.rtype == "room") {
+                    val conflict = ids.mapNotNull { snap.light(it) }.filter { it.roomName != null && it.roomId != group.id }
+                    if (conflict.isNotEmpty()) return err("invalid_argument", "A light belongs to one room. Already placed: ${conflict.joinToString(", ") { "${it.name} (${it.roomName})" }}.")
+                    val lightDevices = snap.lights.map { it.deviceId ?: it.id }.toSet()
+                    val keepOthers = group.deviceIds.filter { it !in lightDevices }
+                    putJsonArray("children") { for (d in keepOthers + ids.map { snap.light(it)?.deviceId ?: it }) add(buildJsonObject { put("rid", d); put("rtype", "device") }) }
+                } else {
+                    putJsonArray("children") { for (id in ids) add(buildJsonObject { put("rid", id); put("rtype", "light") }) }
+                }
+                done.add("lights: ${ids.joinToString(", ") { snap.light(it)?.name ?: it }.ifEmpty { "none" }}")
+            }
+        }
+        if (body.isEmpty()) return err("invalid_argument", "Give new_name, icon, add_lights, remove_lights or lights.")
+        putResource(group.kind.rtype, group.id, body)
+        return ok("${group.name}: ${done.joinToString("; ")}")
+    }
+
+    private suspend fun deleteGroup(args: JsonObject): JsonObject {
+        val q = args.str("group") ?: throw IllegalArgumentException("group is required")
+        val res = matchGroup(q)
+        val group = (res as? MatchResult.Found)?.item ?: return matchFail(res, "room", q) { it.name }
+        deleteResource(group.kind.rtype, group.id)
+        return ok("${group.name} deleted; its lights are kept.")
+    }
+
+    // ------------------------------------------------------------------ scenes
+
+    private fun sceneActionFromLight(l: LightUi): JsonObject = buildJsonObject {
+        putJsonObject("target") { put("rid", l.id); put("rtype", "light") }
+        putJsonObject("action") {
+            putJsonObject("on") { put("on", l.on) }
+            if (l.on) {
+                if (l.supportsDimming) putJsonObject("dimming") { put("brightness", l.brightness.roundToInt().coerceIn(1, 100)) }
+                if (l.isCtMode && l.mirek != null) putJsonObject("color_temperature") { put("mirek", l.mirek) }
+                else if (l.supportsColor && l.xy != null) putJsonObject("color") { putJsonObject("xy") { put("x", l.xy.x); put("y", l.xy.y) } }
+            }
+        }
+    }
+
+    private fun sceneActionFor(lightId: String, on: Boolean, brightness: Int?, xy: XY?, mirek: Int?): JsonObject = buildJsonObject {
+        putJsonObject("target") { put("rid", lightId); put("rtype", "light") }
+        putJsonObject("action") {
+            putJsonObject("on") { put("on", on) }
+            if (on) {
+                if (brightness != null) putJsonObject("dimming") { put("brightness", brightness.coerceIn(1, 100)) }
+                if (xy != null) putJsonObject("color") { putJsonObject("xy") { put("x", xy.x); put("y", xy.y) } }
+                else if (mirek != null) putJsonObject("color_temperature") { put("mirek", mirek) }
+            }
+        }
+    }
+
+    /** Per-light states from a lights array; each entry starts from the light's current look. */
+    private fun sceneActionsFromArgs(v: JsonElement?, group: GroupUi): Pair<Map<String, JsonObject>?, JsonObject?> {
+        val out = LinkedHashMap<String, JsonObject>()
+        for (raw in (v as? JsonArray) ?: JsonArray(emptyList())) {
+            val o = raw as? JsonObject ?: continue
+            val q = o.str("light") ?: continue
+            val res = matchLight(q, group.name)
+            val l = (res as? MatchResult.Found)?.item ?: return null to matchFail(res, "light", q) { it.name }
+            if (group.lights.none { it.id == l.id }) return null to err("invalid_argument", "${l.name} is not in ${group.name}.")
+            val d = parseDesired(o)
+            val on = d.on ?: l.on
+            val brightness = d.brightness?.roundToInt() ?: l.brightness.roundToInt()
+            val xy = d.xy ?: if (d.mirek == null && !l.isCtMode) l.xy else null
+            val mirek = d.mirek ?: if (d.xy == null && l.isCtMode) l.mirek else null
+            out[l.id] = sceneActionFor(l.id, on, brightness, xy, mirek)
+        }
+        return out to null
+    }
+
+    private suspend fun createScene(args: JsonObject): JsonObject {
+        val name = args.str("name")?.trim()?.take(32) ?: return err("invalid_argument", "name is required.")
+        val roomQ = args.str("room") ?: throw IllegalArgumentException("room is required")
+        val res = matchGroup(roomQ)
+        val group = (res as? MatchResult.Found)?.item ?: return matchFail(res, "room", roomQ) { it.name }
+        val (overrides, e) = sceneActionsFromArgs(args["lights"], group)
+        if (overrides == null) return e!!
+        val actions = group.lights.map { overrides[it.id] ?: sceneActionFromLight(it) }
+        val body = buildJsonObject {
+            put("type", "scene")
+            putJsonObject("metadata") { put("name", name) }
+            putJsonObject("group") { put("rid", group.id); put("rtype", group.kind.rtype) }
+            putJsonArray("actions") { for (a in actions) add(a) }
+            args.num("speed")?.let { put("speed", it.coerceIn(0.0, 1.0)) }
+            args.bool("auto_dynamic")?.let { put("auto_dynamic", it) }
+        }
+        val id = postResource("scene", body)
+        return ok("Scene \"$name\" saved for ${group.name} (${actions.size} lights${if (overrides.isNotEmpty()) ", ${overrides.size} set explicitly" else ", current look"}).", buildJsonObject { put("id", id) })
+    }
+
+    private suspend fun updateScene(args: JsonObject): JsonObject {
+        val q = args.str("scene") ?: throw IllegalArgumentException("scene is required")
+        val res = matchScene(q, args.str("room"))
+        val sc = (res as? MatchResult.Found)?.item ?: return matchFail(res, "scene", q) { "${it.name} (${it.groupName})" }
+        val group = snap.group(sc.groupId)
+        val done = ArrayList<String>()
+        val newName = args.str("new_name")?.trim()?.take(32)
+        val speed = args.num("speed")?.coerceIn(0.0, 1.0)
+        val auto = args.bool("auto_dynamic")
+        val fromCurrent = args.bool("from_current_state") == true
+        val touchLights = group != null && (fromCurrent || (args["lights"] as? JsonArray)?.isNotEmpty() == true)
+        var overrides: Map<String, JsonObject> = emptyMap()
+        if (touchLights) {
+            val (o, e) = sceneActionsFromArgs(args["lights"], group!!)
+            if (o == null) return e!!
+            overrides = o
+        }
+        val body = buildJsonObject {
+            if (newName != null) { putJsonObject("metadata") { put("name", newName) }; done.add("renamed to \"$newName\"") }
+            if (speed != null) { put("speed", speed); done.add("speed $speed") }
+            if (auto != null) { put("auto_dynamic", auto); done.add("auto-dynamic ${if (auto) "on" else "off"}") }
+            if (touchLights) {
+                val existing = sc.actions.associate { a -> a.target.rid to buildJsonObject { putJsonObject("target") { put("rid", a.target.rid); put("rtype", a.target.rtype) }; put("action", a.action) } }
+                val actions = group!!.lights.map { l -> overrides[l.id] ?: (if (fromCurrent) sceneActionFromLight(l) else existing[l.id] ?: sceneActionFromLight(l)) }
+                putJsonArray("actions") { for (a in actions) add(a) }
+                done.add(if (fromCurrent) "captured the current look" else "${overrides.size} light${if (overrides.size == 1) "" else "s"} changed")
+            }
+        }
+        if (body.isEmpty()) return err("invalid_argument", "Give new_name, speed, auto_dynamic, lights or from_current_state.")
+        putResource("scene", sc.id, body)
+        return ok("Scene \"${sc.name}\" (${sc.groupName}): ${done.joinToString("; ")}")
+    }
+
+    private suspend fun deleteScene(args: JsonObject): JsonObject {
+        val q = args.str("scene") ?: throw IllegalArgumentException("scene is required")
+        val res = matchScene(q, args.str("room"))
+        val sc = (res as? MatchResult.Found)?.item ?: return matchFail(res, "scene", q) { "${it.name} (${it.groupName})" }
+        repo.deleteScene(sc.id)
+        return ok("Scene \"${sc.name}\" deleted from ${sc.groupName}.")
+    }
+
     // ------------------------------------------------------------------ system prompt
 
     /** Describes the home for the system instruction. */
@@ -732,6 +1324,12 @@ class HueTools(private val repo: HueRepository) {
                 .append(s.motionAutomations.joinToString("; ") { a -> "${a.sourceName} → ${a.whereNames.joinToString(", ")}: ${a.summary}${if (a.enabled) "" else " (paused)"}" })
                 .append('\n')
         }
+        if (s.routines.isNotEmpty()) {
+            sb.append("- routines (set_wake_up / set_go_to_sleep / delete_routine): ")
+                .append(s.routines.joinToString("; ") { r -> "${r.name} [${r.kind}] → ${r.whereNames.joinToString(", ")}: ${r.summary}${if (r.enabled) "" else " (paused)"}" })
+                .append('\n')
+        }
+        sb.append("- also on the bridge: rooms/zones (create_group, update_group, delete_group), scenes (create_scene, update_scene, delete_scene), rename, sensor settings (set_sensor_settings: sensitivity, room, name), light power-on behaviour (set_light_power_on_behavior). Never tell the user to use the Hue app for these.\n")
         if (s.cameras.isNotEmpty()) {
             sb.append("- cameras (Hue Secure; motion/light/battery only, no video through the bridge): ")
                 .append(s.cameras.joinToString(", ") { c -> "${c.name} (${if (c.motion == true) "motion detected" else "clear"}${if (c.motionEnabled == false) ", detection paused" else ""}${c.batteryLevel?.let { ", battery $it%" } ?: ""})" })

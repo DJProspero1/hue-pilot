@@ -55,7 +55,7 @@ class AssistantEngineTest {
         val events = ArrayList<AssistantEvent>()
         engine.ask("what is on?", "system", adapter, config) { events += it }
 
-        assertThat(adapter.seenTools[0]).hasSize(16)
+        assertThat(adapter.seenTools[0]).hasSize(29)
         // 1st request: just the user turn. 2nd: user, assistant(tool call), tool results.
         assertThat(adapter.seenHistories[0]).hasSize(1)
         assertThat(adapter.seenHistories[1]).hasSize(3)
@@ -134,6 +134,8 @@ class AssistantEngineTest {
             "get_home_overview", "set_room", "set_light", "set_all_lights", "activate_scene", "set_effect",
             "identify_light", "get_sensor_readings", "set_camera_motion_detection", "list_schedules", "create_schedule", "delete_schedule",
             "list_motion_automations", "set_motion_automation", "delete_motion_automation", "set_motion_sensing",
+            "set_sensor_settings", "rename", "set_light_power_on_behavior", "create_group", "update_group", "delete_group",
+            "create_scene", "update_scene", "delete_scene", "list_routines", "set_wake_up", "set_go_to_sleep", "delete_routine",
         ).inOrder()
         assertThat(tools.declarations.map { it.jsonObject["name"]!!.jsonPrimitive.content }).isEqualTo(names)
         val setRoom = tools.specs.first { it.name == "set_room" }

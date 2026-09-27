@@ -4,4 +4,6 @@ export * from './model.ts';
 export * from './matching.ts';
 export * from './schedules.ts';
 export * from './automations.ts';
+export * from './routines.ts';
+export * from './scenes.ts';
 export * from './tools.ts';

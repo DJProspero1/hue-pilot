@@ -250,14 +250,14 @@ test('model: event merging', () => {
   assert.deepEqual(mergeResource({ a: { b: 1, c: 2 }, arr: [1] }, { a: { b: 5 }, arr: [2, 3] }), { a: { b: 5, c: 2 }, arr: [2, 3] });
 });
 
-test('automations: configuration round trip, time parsing and summary', async () => {
-  const { buildAccessoryConfiguration, parseAccessoryConfiguration, parseMotionTime, formatMotionTime, describeMotionSlots } = await import('../src/automations.ts');
+test('automations: configuration round trip, darkness modes, time parsing and summary', async () => {
+  const { buildAccessoryConfiguration, parseAccessoryConfiguration, parseMotionTime, formatMotionTime, describeMotionSlots, describeDarkness, luxToLightLevel, lightLevelToLuxValue } = await import('../src/automations.ts');
   const spec = {
     sourceDeviceId: 'dev',
     motionServiceId: 'svc',
     motionType: 'motion',
     where: [{ id: 'room1', kind: 'room' }],
-    onlyWhenDark: true,
+    darkness: { mode: 'sunset_to_sunrise', sunsetOffsetMinutes: -30, sunriseOffsetMinutes: 30 },
     slots: [
       { start: { hour: 22, minute: 0 }, onMotion: { kind: 'scene', sceneId: 'sc1' }, noMotionAfterMinutes: 5, onNoMotion: { kind: 'off' }, doNotDisturb: true },
       { start: { hour: 7, minute: 0 }, onMotion: { kind: 'nothing' }, noMotionAfterMinutes: 10, onNoMotion: { kind: 'nothing' } },
@@ -271,13 +271,20 @@ test('automations: configuration round trip, time parsing and summary', async ()
   assert.equal(cfg.motion.when.timeslots[1].do_not_disturb, true);
   assert.deepEqual(cfg.motion.where, [{ group: { rid: 'room1', rtype: 'room' } }]);
   assert.deepEqual(cfg.source, { rid: 'dev', rtype: 'device' });
-  assert.ok(cfg.light_level.daylight.sunrise_sunset);
-  assert.equal(buildAccessoryConfiguration({ ...spec, onlyWhenDark: false }).light_level, undefined);
-  const kept = { daylight: { daylight_sensitivity: { light_level_service: { rid: 'll', rtype: 'light_level' }, settings: { dark_threshold: 7267, offset: 7000 } } } };
-  assert.deepEqual(buildAccessoryConfiguration(spec, kept).light_level, kept);
+  assert.deepEqual(cfg.light_level, { daylight: { sunrise_sunset: { sunrise_offset: { minutes: 30 }, sunset_offset: { minutes: -30 } } } });
+  assert.equal(buildAccessoryConfiguration({ ...spec, darkness: { mode: 'any' } }).light_level, undefined);
+  // Hour offsets, as the Hue app writes them, survive a round trip untouched.
+  const hours = buildAccessoryConfiguration({ ...spec, darkness: { mode: 'sunset_to_sunrise', sunsetOffsetMinutes: 120, sunriseOffsetMinutes: -120 } });
+  assert.deepEqual(hours.light_level, { daylight: { sunrise_sunset: { sunrise_offset: { hours: -2 }, sunset_offset: { hours: 2 } } } });
+  assert.deepEqual(parseAccessoryConfiguration(hours).darkness, { mode: 'sunset_to_sunrise', sunsetOffsetMinutes: 120, sunriseOffsetMinutes: -120 });
+  // The sensor's own daylight threshold.
+  const sensor = buildAccessoryConfiguration({ ...spec, darkness: { mode: 'sensor', lightLevelServiceId: 'll1', lightLevelType: 'light_level', darkThreshold: 7267, offset: 7000 } });
+  assert.deepEqual(sensor.light_level, { daylight: { daylight_sensitivity: { light_level_service: { rid: 'll1', rtype: 'light_level' }, settings: { dark_threshold: 7267, offset: 7000 } } } });
+  assert.equal(parseAccessoryConfiguration(sensor).darkness.mode, 'sensor');
+  assert.equal(parseAccessoryConfiguration(sensor).darkness.darkThreshold, 7267);
 
   const back = parseAccessoryConfiguration(cfg);
-  assert.equal(back.onlyWhenDark, true);
+  assert.equal(back.darkness.mode, 'sunset_to_sunrise');
   assert.equal(back.motionType, 'motion');
   assert.deepEqual(back.where, [{ id: 'room1', kind: 'room' }]);
   assert.equal(back.slots.length, 2);
@@ -294,6 +301,39 @@ test('automations: configuration round trip, time parsing and summary', async ()
   assert.deepEqual(parseMotionTime('midnight'), { hour: 0, minute: 0 });
   assert.throws(() => parseMotionTime('25:00'));
   assert.equal(formatMotionTime({ hour: 7, minute: 5 }), '07:05');
-  assert.equal(describeMotionSlots(back.slots, () => 'Nightlight', true), '07:00 nothing · 22:00 "Nightlight", off after 5 min · only when dark');
-  assert.equal(describeMotionSlots([back.slots[1]], () => 'Nightlight', false), '"Nightlight", off after 5 min · any time');
+  assert.equal(luxToLightLevel(5), 6991);
+  assert.ok(Math.abs(lightLevelToLuxValue(7267) - 5.3) < 0.2);
+  assert.equal(describeDarkness({ mode: 'any' }), 'any time');
+  assert.equal(describeDarkness(back.darkness), 'only when dark (30 min before sunset → 30 min after sunrise)');
+  assert.equal(describeDarkness({ mode: 'sunset_to_sunrise', sunsetOffsetMinutes: 120, sunriseOffsetMinutes: 0 }), 'only when dark (2 h after sunset → sunrise)');
+  assert.equal(describeDarkness(parseAccessoryConfiguration(sensor).darkness), 'only when dark (sensor below ~5.3 lx)');
+  assert.equal(describeMotionSlots(back.slots, () => 'Nightlight', back.darkness), '07:00 nothing · 22:00 "Nightlight", off after 5 min · only when dark (30 min before sunset → 30 min after sunrise)');
+  assert.equal(describeMotionSlots([back.slots[1]], () => 'Nightlight', { mode: 'any' }), '"Nightlight", off after 5 min · any time');
+});
+
+test('routines: wake-up and go-to-sleep configurations, days and summaries', async () => {
+  const { buildRoutineConfiguration, parseRoutineConfiguration, parseDays, describeDays, describeRoutine, WAKE_UP_SCRIPT_ID, GO_TO_SLEEP_SCRIPT_ID, buildRoutineBody } = await import('../src/routines.ts');
+  assert.deepEqual(parseDays(['mon', 'Wed', 'friday']), ['monday', 'wednesday', 'friday']);
+  assert.deepEqual(parseDays('weekdays'), ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']);
+  assert.deepEqual(parseDays(['weekends']), ['saturday', 'sunday']);
+  assert.equal(parseDays(undefined).length, 7);
+  assert.throws(() => parseDays(['funday']));
+  assert.equal(describeDays(parseDays('weekdays')), 'weekdays');
+  assert.equal(describeDays(parseDays([])), 'every day');
+  assert.equal(describeDays(['saturday', 'sunday']), 'weekends');
+  assert.equal(describeDays(['monday', 'thursday']), 'mon, thu');
+  const wake = { kind: 'wake_up', where: [{ id: 'z1', kind: 'zone' }], time: { hour: 7, minute: 15 }, days: parseDays('weekdays'), fadeMinutes: 20, endBrightness: 80, turnOffAfterMinutes: 30 };
+  const wcfg = buildRoutineConfiguration(wake);
+  assert.deepEqual(wcfg, { end_brightness: 80, fade_in_duration: { seconds: 1200 }, style: 'sunrise', turn_lights_off_after: { minutes: 30 }, when: { recurrence_days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'], time_point: { type: 'time', time: { hour: 7, minute: 15 } } }, where: [{ group: { rid: 'z1', rtype: 'zone' } }] });
+  assert.deepEqual(parseRoutineConfiguration(WAKE_UP_SCRIPT_ID, wcfg), { ...wake, endState: undefined });
+  assert.equal(describeRoutine(wake), 'sunrise over 20 min to 80% at 07:15 weekdays, off 30 min later');
+  const gts = { kind: 'go_to_sleep', where: [{ id: 'r1', kind: 'room' }], time: { hour: 23, minute: 0 }, days: parseDays([]), fadeMinutes: 30, endState: 'turn_off' };
+  const gcfg = buildRoutineConfiguration(gts);
+  assert.equal(gcfg.end_state, 'turn_off');
+  assert.equal(gcfg.fade_out_duration.seconds, 1800);
+  assert.deepEqual(parseRoutineConfiguration(GO_TO_SLEEP_SCRIPT_ID, gcfg), { ...gts, endBrightness: undefined, turnOffAfterMinutes: undefined });
+  assert.equal(describeRoutine(gts), 'fade out over 30 min at 23:00 every day, then off');
+  assert.equal(buildRoutineBody(wake, { name: 'x', enabled: true }).script_id, WAKE_UP_SCRIPT_ID);
+  assert.equal(buildRoutineBody(wake, { name: 'x', enabled: true, forUpdate: true }).script_id, undefined);
+  assert.equal(parseRoutineConfiguration('other-script', gcfg), null);
 });

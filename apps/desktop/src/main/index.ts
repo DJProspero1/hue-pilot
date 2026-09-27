@@ -99,7 +99,7 @@ const runTool = async (name: string, args: Record<string, unknown>) => {
   // Let the event stream deliver the new state before the caller reads it back.
   if (!READ_ONLY_TOOLS.has(name) && result.ok && hue.status.stream === 'open') await hue.settle(400);
   // The event stream does not always carry a rewritten automation's configuration: read it back.
-  if (result.ok && /^(set|delete)_motion_automation$/.test(name)) await hue.refresh().catch(() => undefined);
+  if (result.ok && /automation|routine|wake_up|go_to_sleep|_group$|_scene$|^rename$|sensor_settings|power_on/.test(name)) await hue.refresh().catch(() => undefined);
   return result;
 };
 
@@ -454,7 +454,8 @@ const handlers: Handlers = {
   setCameraMotionDetection: (cameraMotionId: string, enabled: boolean) => hue.setCameraMotionDetection(cameraMotionId, enabled),
   getMotionEvents: async () => hue.getMotionEvents(),
   setMotionAutomationEnabled: async (id: string, enabled: boolean) => {
-    const a = (await hue.getHome()).motionAutomations.find((x) => x.id === id);
+    const home = await hue.getHome();
+    const a = home.motionAutomations.find((x) => x.id === id) ?? home.routines.find((x) => x.id === id);
     if (!a) throw new Error('Automation not found');
     await hue.requireClient().updateBehaviorInstance(id, { enabled, metadata: { name: a.name }, configuration: a.configuration });
     setTimeout(() => hue.refresh().catch(() => undefined), 800);

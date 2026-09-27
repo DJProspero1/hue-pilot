@@ -90,9 +90,13 @@ class HueViewModel(private val container: AppContainer) : ViewModel() {
         repo.setMotionEnabled(id, enabled, accessory.motionType ?: "motion")
     }
     fun setMotionAutomationEnabled(id: String, enabled: Boolean) = run {
-        val a = repo.snapshot.value.motionAutomations.firstOrNull { it.id == id } ?: return@run
+        val snap = repo.snapshot.value
+        val a = snap.motionAutomations.firstOrNull { it.id == id }
+        val r = snap.routines.firstOrNull { it.id == id }
+        val name = a?.name ?: r?.name ?: return@run
+        val configuration = a?.configuration ?: r!!.configuration
         // The bridge refuses an enabled-only PUT; the whole rule goes back with the flag.
-        repo.updateBehaviorInstance(id, buildJsonObject { put("enabled", enabled); putJsonObject("metadata") { put("name", a.name) }; put("configuration", a.configuration) })
+        repo.updateBehaviorInstance(id, buildJsonObject { put("enabled", enabled); putJsonObject("metadata") { put("name", name) }; put("configuration", configuration) })
     }
     fun deleteMotionAutomation(id: String) = run { repo.deleteBehaviorInstance(id) }
     fun renameDevice(deviceId: String, name: String) = run { if (name.isNotBlank()) repo.renameDevice(deviceId, name) }

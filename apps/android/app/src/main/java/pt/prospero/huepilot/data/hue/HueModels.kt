@@ -165,7 +165,10 @@ data class MotionState(
 )
 
 @Serializable
-data class Motion(val id: String = "", val owner: ResourceRef? = null, val enabled: Boolean? = null, val motion: MotionState? = null)
+data class MotionSensitivity(val status: String? = null, val sensitivity: Int? = null, @SerialName("sensitivity_max") val sensitivityMax: Int? = null)
+
+@Serializable
+data class Motion(val id: String = "", val owner: ResourceRef? = null, val enabled: Boolean? = null, val motion: MotionState? = null, val sensitivity: MotionSensitivity? = null)
 
 @Serializable
 data class LightLevelReport(val changed: String? = null, @SerialName("light_level") val lightLevel: Int? = null)

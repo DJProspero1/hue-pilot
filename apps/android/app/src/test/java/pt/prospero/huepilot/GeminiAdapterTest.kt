@@ -47,7 +47,7 @@ class GeminiAdapterTest {
         assertThat(r1.path).isEqualTo("/v1beta/models/gemini-2.5-flash:generateContent?key=AIza")
         val b1 = json.parseToJsonElement(r1.body.readUtf8()).jsonObject
         assertThat(b1["systemInstruction"]!!.jsonObject["parts"]!!.jsonArray[0].jsonObject["text"]!!.jsonPrimitive.content).isEqualTo("SYSTEM")
-        assertThat(b1["tools"]!!.jsonArray[0].jsonObject["functionDeclarations"]!!.jsonArray).hasSize(16)
+        assertThat(b1["tools"]!!.jsonArray[0].jsonObject["functionDeclarations"]!!.jsonArray).hasSize(29)
         assertThat(b1["contents"]!!.jsonArray).hasSize(1)
 
         val r2 = server.takeRequest()

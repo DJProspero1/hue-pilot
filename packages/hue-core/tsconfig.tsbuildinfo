@@ -1,1 +1,1 @@
-{"root":["./src/automations.ts","./src/client.ts","./src/color.ts","./src/http.ts","./src/index.ts","./src/matching.ts","./src/model.ts","./src/node.ts","./src/schedules.ts","./src/tools.ts","./src/types.ts"],"version":"5.9.3"}
+{"root":["./src/automations.ts","./src/client.ts","./src/color.ts","./src/http.ts","./src/index.ts","./src/matching.ts","./src/model.ts","./src/node.ts","./src/routines.ts","./src/scenes.ts","./src/schedules.ts","./src/tools.ts","./src/types.ts"],"version":"5.9.3"}

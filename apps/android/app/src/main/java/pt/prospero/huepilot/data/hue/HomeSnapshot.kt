@@ -9,6 +9,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import pt.prospero.huepilot.domain.MotionAutomations
 import kotlinx.serialization.json.JsonPrimitive
+import pt.prospero.huepilot.domain.Routines
 
 enum class GroupKind(val rtype: String) { ROOM("room"), ZONE("zone") }
 
@@ -121,6 +122,10 @@ data class AccessoryUi(
     val lightLevelUpdated: String?,
     val buttons: List<ButtonInfo>,
     val connectivity: String?,
+    /** Room the device was placed in (rooms hold devices, so sensors have one too). */
+    val roomName: String? = null,
+    val motionSensitivity: Int? = null,
+    val motionSensitivityMax: Int? = null,
 ) {
     val lux: Double? get() = lightLevelRaw?.let { 10.0.pow((it - 1) / 10000.0) }
 
@@ -143,6 +148,28 @@ data class BridgeUi(val id: String, val bridgeId: String?, val timeZone: String?
 /** One time slot of a motion automation; kinds are "nothing", "off" or "scene". */
 data class MotionSlotUi(val start: String, val onMotion: String, val onMotionSceneId: String?, val noMotionAfterMinutes: Int, val onNoMotion: String, val onNoMotionSceneId: String?, val doNotDisturb: Boolean)
 
+/** A wake-up / go-to-sleep routine (bridge behavior_instance), or another automation the Hue app manages. */
+data class RoutineUi(
+    val id: String,
+    val name: String,
+    /** "wake_up", "go_to_sleep" or "other". */
+    val kind: String,
+    val scriptId: String,
+    val enabled: Boolean,
+    val status: String?,
+    val whereIds: List<String>,
+    val whereKinds: List<String>,
+    val whereNames: List<String>,
+    val time: String?,
+    val days: List<String>?,
+    val fadeMinutes: Int?,
+    val endBrightness: Int?,
+    val turnOffAfterMinutes: Int?,
+    val endState: String?,
+    val summary: String,
+    val configuration: JsonObject,
+)
+
 /** What a motion sensor or camera makes the lights do: a bridge behavior_instance of the Hue Accessories script. */
 data class MotionAutomationUi(
     val id: String,
@@ -159,6 +186,10 @@ data class MotionAutomationUi(
     val whereKinds: List<String>,
     val whereNames: List<String>,
     val onlyWhenDark: Boolean,
+    /** "any", "sunset_to_sunrise" or "sensor". */
+    val darkness: String,
+    val darknessDetails: String,
+    val darknessSpec: MotionAutomations.Darkness,
     /** The bridge's darkness condition as stored (kept when updating). */
     val lightLevel: JsonObject?,
     /** The bridge configuration verbatim: an enabled-only PUT is refused unless it is sent back too. */
@@ -177,6 +208,7 @@ data class HomeSnapshot(
     val allOn: Boolean = false,
     val bridge: BridgeUi? = null,
     val motionAutomations: List<MotionAutomationUi> = emptyList(),
+    val routines: List<RoutineUi> = emptyList(),
     val resourceCount: Int = 0,
 ) {
     val groups: List<GroupUi> get() = rooms + zones
@@ -218,6 +250,7 @@ object SnapshotBuilder {
         var bridgeHome: Group? = null
         var bridge: Bridge? = null
         val behaviors = ArrayList<JsonObject>()
+        val scriptNames = HashMap<String, String>()
 
         for ((id, obj) in resources) {
             when (typeOf(obj)) {
@@ -229,7 +262,8 @@ object SnapshotBuilder {
                 "device" -> decode(obj, Device.serializer())?.let { devices[id] = it }
                 "motion", "camera_motion" -> decode(obj, Motion.serializer())?.let { motions[id] = it; motionTypes[id] = typeOf(obj) ?: "motion" }
                 "light_level" -> decode(obj, LightLevel.serializer())?.let { lightLevels[id] = it }
-                "behavior_instance" -> if (MotionAutomations.isMotionAutomation(obj)) behaviors.add(obj)
+                "behavior_instance" -> behaviors.add(obj)
+                "behavior_script" -> (obj["metadata"] as? JsonObject)?.get("name")?.jsonPrimitive?.content?.let { scriptNames[id] = it }
                 "temperature" -> decode(obj, Temperature.serializer())?.let { temperatures[id] = it }
                 "device_power" -> decode(obj, DevicePower.serializer())?.let { powers[id] = it }
                 "button" -> decode(obj, Button.serializer())?.let { buttons[id] = it }
@@ -390,6 +424,8 @@ object SnapshotBuilder {
                 free.remove(best)
             }
         }
+        val roomNameOfDevice = HashMap<String, String>()
+        for (g in groups.values) if (g.type == "room") for (c in g.children) if (c.rtype == "device") g.metadata?.name?.let { roomNameOfDevice[c.rid] = it }
         val accessories = devices.values.filter { d ->
             d.services.none { it.rtype == "light" } || d.id == bridgeDeviceId
         }.map { d ->
@@ -424,6 +460,9 @@ object SnapshotBuilder {
                     ButtonInfo(b.id, b.metadata?.controlId, b.button?.report?.event ?: b.button?.lastEvent, b.button?.report?.updated)
                 },
                 connectivity = connectivityByDevice[d.id],
+                roomName = roomNameOfDevice[d.id],
+                motionSensitivity = m?.sensitivity?.sensitivity,
+                motionSensitivityMax = m?.sensitivity?.sensitivityMax,
             )
         }.sortedWith(compareBy({ !it.isBridge }, { it.name.lowercase() }))
 
@@ -443,7 +482,7 @@ object SnapshotBuilder {
         val automationGroupNames = (roomUis + zoneUis).associate { it.id to it.name }
         val sceneNames = sceneUis.associate { it.id to it.name }
         val cameraIds = accessories.filter { it.isCamera }.map { it.deviceId }.toSet()
-        val motionAutomations = behaviors.mapNotNull { b ->
+        val motionAutomations = behaviors.filter { MotionAutomations.isMotionAutomation(it) }.mapNotNull { b ->
             val spec = MotionAutomations.parseConfiguration(b["configuration"] as? JsonObject) ?: return@mapNotNull null
             val id = b["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
             val device = devices[spec.sourceDeviceId]
@@ -462,13 +501,49 @@ object SnapshotBuilder {
                 whereIds = spec.where.map { it.first },
                 whereKinds = spec.where.map { it.second },
                 whereNames = spec.where.map { automationGroupNames[it.first] ?: "room" },
-                onlyWhenDark = spec.onlyWhenDark,
+                onlyWhenDark = spec.darkness !is MotionAutomations.Darkness.AnyTime,
+                darkness = spec.darkness.mode,
+                darknessDetails = MotionAutomations.describeDarkness(spec.darkness),
+                darknessSpec = spec.darkness,
                 lightLevel = (b["configuration"] as? JsonObject)?.get("light_level") as? JsonObject,
                 configuration = (b["configuration"] as? JsonObject) ?: JsonObject(emptyMap()),
                 slots = spec.slots.sortedBy { it.start.minutes }.map { sl -> MotionSlotUi(sl.start.toString(), kind(sl.onMotion), sceneId(sl.onMotion), sl.noMotionAfterMinutes, kind(sl.onNoMotion), sceneId(sl.onNoMotion), sl.doNotDisturb) },
-                summary = MotionAutomations.describe(spec.slots, spec.onlyWhenDark) { sceneNames[it] ?: "scene" },
+                summary = MotionAutomations.describe(spec.slots, spec.darkness) { sceneNames[it] ?: "scene" },
             )
         }.sortedBy { it.sourceName.lowercase() }
+
+        val routines = behaviors.filter { !MotionAutomations.isMotionAutomation(it) }.mapNotNull { b ->
+            val id = b["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val scriptId = b["script_id"]?.jsonPrimitive?.content ?: ""
+            val cfg = b["configuration"] as? JsonObject
+            val spec = Routines.parseConfiguration(scriptId, cfg)
+            val whereRaw = (cfg?.get("where") as? kotlinx.serialization.json.JsonArray ?: kotlinx.serialization.json.JsonArray(emptyList())).mapNotNull { w ->
+                val g = (w as? JsonObject)?.get("group") as? JsonObject ?: return@mapNotNull null
+                val rid = g["rid"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                rid to (if (g["rtype"]?.jsonPrimitive?.content == "zone") "zone" else "room")
+            }
+            val where = spec?.where ?: whereRaw
+            val scriptName = scriptNames[scriptId]
+            RoutineUi(
+                id = id,
+                name = (b["metadata"] as? JsonObject)?.get("name")?.jsonPrimitive?.content?.trim()?.ifEmpty { null } ?: scriptName ?: "Automation",
+                kind = spec?.kind ?: "other",
+                scriptId = scriptId,
+                enabled = b["enabled"]?.jsonPrimitive?.content != "false",
+                status = (b["status"] as? JsonPrimitive)?.content,
+                whereIds = where.map { it.first },
+                whereKinds = where.map { it.second },
+                whereNames = where.map { automationGroupNames[it.first] ?: if (bridgeHome?.id == it.first) "All lights" else "room" },
+                time = spec?.time?.toString(),
+                days = spec?.days,
+                fadeMinutes = spec?.fadeMinutes,
+                endBrightness = spec?.endBrightness,
+                turnOffAfterMinutes = spec?.turnOffAfterMinutes,
+                endState = spec?.endState,
+                summary = spec?.let { Routines.describe(it) } ?: "${scriptName ?: "automation"} (managed in the Hue app)",
+                configuration = cfg ?: JsonObject(emptyMap()),
+            )
+        }.sortedWith(compareBy({ it.kind }, { it.name.lowercase() }))
 
         val sortedLights = lightUis.values.sortedWith(compareBy({ it.roomName?.lowercase() ?: "￿" }, { it.name.lowercase() }))
         return HomeSnapshot(
@@ -481,6 +556,7 @@ object SnapshotBuilder {
             allOn = bridgeHomeGl?.let { groupedLights[it]?.on?.on } ?: sortedLights.any { it.on },
             bridge = bridgeUi,
             motionAutomations = motionAutomations,
+            routines = routines,
             resourceCount = resources.size,
         )
     }

@@ -1,18 +1,21 @@
 package pt.prospero.huepilot.domain
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlin.math.log10
+import kotlin.math.max
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * Motion automations: what a motion sensor or Hue Secure camera makes the lights do. On the bridge
@@ -20,11 +23,17 @@ import kotlinx.serialization.json.putJsonObject
  * app creates — so they run on the bridge with every app closed. Mirrors hue-core/automations.ts.
  *
  * Bridge facts (verified on a Bridge Pro): one instance per source device (a POST for a device that
- * already has one updates it); `light_level` absent = any time of day; each timeslot runs from its
- * start until the next slot's start, wrapping past midnight.
+ * already has one updates it); PUT must not carry `script_id` and must include the configuration;
+ * `light_level` absent = any time of day, `sunrise_sunset` = by the sun (offsets in hours or
+ * minutes), `daylight_sensitivity` = the sensor's own light level below `dark_threshold` (needs
+ * `offset` too); each timeslot runs from its start until the next slot's start, wrapping past midnight.
  */
 object MotionAutomations {
     const val SCRIPT_ID = "67d9395b-4403-42cc-b5f0-740b699d67c6"
+
+    /** What the Hue app stores for its default "daylight sensitivity" (about 5 lux). */
+    const val DEFAULT_DARK_THRESHOLD = 7267
+    const val DEFAULT_DARK_OFFSET = 7000
 
     data class Time(val hour: Int, val minute: Int) {
         val minutes: Int get() = hour * 60 + minute
@@ -37,6 +46,20 @@ object MotionAutomations {
         data class Scene(val sceneId: String) : Action()
     }
 
+    /** When the rule may act. */
+    sealed class Darkness {
+        object AnyTime : Darkness()
+        data class SunsetToSunrise(val sunsetOffsetMinutes: Int, val sunriseOffsetMinutes: Int) : Darkness()
+        data class Sensor(val lightLevelServiceId: String, val lightLevelType: String, val darkThreshold: Int, val offset: Int) : Darkness()
+
+        val mode: String
+            get() = when (this) {
+                is AnyTime -> "any"
+                is SunsetToSunrise -> "sunset_to_sunrise"
+                is Sensor -> "sensor"
+            }
+    }
+
     data class Slot(val start: Time, val onMotion: Action, val noMotionAfterMinutes: Int, val onNoMotion: Action, val doNotDisturb: Boolean = false)
 
     data class Spec(
@@ -44,35 +67,70 @@ object MotionAutomations {
         val motionServiceId: String,
         val motionType: String,
         val where: List<Pair<String, String>>, // id to "room"/"zone"
-        val onlyWhenDark: Boolean,
+        val darkness: Darkness,
         val slots: List<Slot>,
     )
 
-    /** Default "dark" window: half an hour before sunset until half an hour after sunrise. */
-    private fun defaultDark(): JsonObject = buildJsonObject {
-        putJsonObject("daylight") {
-            putJsonObject("sunrise_sunset") {
-                putJsonObject("sunrise_offset") { put("minutes", 30) }
-                putJsonObject("sunset_offset") { put("minutes", -30) }
-            }
-        }
-    }
+    /** The bridge's light-level scale: 10000 · log10(lux) + 1. */
+    fun luxToLightLevel(lux: Double): Int = max(0, (10000 * log10(max(0.01, lux)) + 1).roundToInt())
 
-    private fun actionJson(a: Action): kotlinx.serialization.json.JsonElement = when (a) {
+    fun lightLevelToLux(level: Int): Double = 10.0.pow((level - 1) / 10000.0)
+
+    private fun actionJson(a: Action): JsonElement = when (a) {
         is Action.Scene -> buildJsonObject { putJsonObject("recall") { put("rid", a.sceneId); put("rtype", "scene") } }
         Action.Off -> JsonPrimitive("all_off")
         Action.Nothing -> JsonPrimitive("do_nothing")
     }
 
-    private fun actionFrom(e: kotlinx.serialization.json.JsonElement?): Action = when {
+    private fun actionFrom(e: JsonElement?): Action = when {
         e == null -> Action.Nothing
         e is JsonPrimitive && e.contentOrNull == "all_off" -> Action.Off
         e is JsonObject -> (e["recall"] as? JsonObject)?.get("rid")?.jsonPrimitive?.contentOrNull?.let { Action.Scene(it) } ?: Action.Nothing
         else -> Action.Nothing
     }
 
-    /** Bridge configuration; [existingLightLevel] keeps a darkness condition made in the Hue app when still wanted. */
-    fun buildConfiguration(spec: Spec, existingLightLevel: JsonObject? = null): JsonObject = buildJsonObject {
+    private fun offsetJson(minutes: Int): JsonObject =
+        if (minutes != 0 && minutes % 60 == 0) buildJsonObject { put("hours", minutes / 60) } else buildJsonObject { put("minutes", minutes) }
+
+    private fun offsetFrom(o: JsonElement?): Int {
+        val obj = o as? JsonObject ?: return 0
+        return (obj["hours"]?.jsonPrimitive?.intOrNull ?: 0) * 60 + (obj["minutes"]?.jsonPrimitive?.intOrNull ?: 0)
+    }
+
+    fun buildLightLevel(d: Darkness): JsonObject? = when (d) {
+        is Darkness.AnyTime -> null
+        is Darkness.SunsetToSunrise -> buildJsonObject {
+            putJsonObject("daylight") { putJsonObject("sunrise_sunset") { put("sunrise_offset", offsetJson(d.sunriseOffsetMinutes)); put("sunset_offset", offsetJson(d.sunsetOffsetMinutes)) } }
+        }
+        is Darkness.Sensor -> buildJsonObject {
+            putJsonObject("daylight") {
+                putJsonObject("daylight_sensitivity") {
+                    putJsonObject("light_level_service") { put("rid", d.lightLevelServiceId); put("rtype", d.lightLevelType) }
+                    putJsonObject("settings") { put("dark_threshold", d.darkThreshold); put("offset", d.offset) }
+                }
+            }
+        }
+    }
+
+    fun parseLightLevel(v: JsonObject?): Darkness {
+        val daylight = v?.get("daylight") as? JsonObject ?: return Darkness.AnyTime
+        (daylight["sunrise_sunset"] as? JsonObject)?.let { ss -> return Darkness.SunsetToSunrise(offsetFrom(ss["sunset_offset"]), offsetFrom(ss["sunrise_offset"])) }
+        (daylight["daylight_sensitivity"] as? JsonObject)?.let { ds ->
+            val service = ds["light_level_service"] as? JsonObject
+            val rid = service?.get("rid")?.jsonPrimitive?.contentOrNull ?: return@let
+            val settings = ds["settings"] as? JsonObject
+            return Darkness.Sensor(
+                rid,
+                if (service["rtype"]?.jsonPrimitive?.contentOrNull == "grouped_light_level") "grouped_light_level" else "light_level",
+                settings?.get("dark_threshold")?.jsonPrimitive?.intOrNull ?: DEFAULT_DARK_THRESHOLD,
+                settings?.get("offset")?.jsonPrimitive?.intOrNull ?: DEFAULT_DARK_OFFSET,
+            )
+        }
+        return Darkness.SunsetToSunrise(-30, 30)
+    }
+
+    /** Bridge configuration (round-trips what the Hue app writes). */
+    fun buildConfiguration(spec: Spec): JsonObject = buildJsonObject {
         putJsonObject("source") { put("rid", spec.sourceDeviceId); put("rtype", "device") }
         putJsonObject("motion") {
             putJsonObject("motion_service") { put("rid", spec.motionServiceId); put("rtype", spec.motionType) }
@@ -91,18 +149,18 @@ object MotionAutomations {
                 }
             }
         }
-        if (spec.onlyWhenDark) put("light_level", existingLightLevel ?: defaultDark())
+        buildLightLevel(spec.darkness)?.let { put("light_level", it) }
     }
 
     /** POST needs `script_id`; PUT refuses it ("property: script_id not allowed"), so pass [forUpdate] when rewriting a rule. */
-    fun instanceBody(spec: Spec, name: String, enabled: Boolean, existingLightLevel: JsonObject? = null, forUpdate: Boolean = false): JsonObject = buildJsonObject {
+    fun instanceBody(spec: Spec, name: String, enabled: Boolean, forUpdate: Boolean = false): JsonObject = buildJsonObject {
         if (!forUpdate) {
             put("type", "behavior_instance")
             put("script_id", SCRIPT_ID)
         }
         put("enabled", enabled)
         putJsonObject("metadata") { put("name", name.take(32)) }
-        put("configuration", buildConfiguration(spec, existingLightLevel))
+        put("configuration", buildConfiguration(spec))
     }
 
     /** Reads a bridge configuration back; null when it is not a motion automation. */
@@ -136,7 +194,7 @@ object MotionAutomations {
             motionServiceId = serviceId,
             motionType = if (service["rtype"]?.jsonPrimitive?.contentOrNull == "camera_motion") "camera_motion" else "motion",
             where = where,
-            onlyWhenDark = cfg["light_level"] != null,
+            darkness = parseLightLevel(cfg["light_level"] as? JsonObject),
             slots = slots,
         )
     }
@@ -161,13 +219,30 @@ object MotionAutomations {
         return Time(hour, minute)
     }
 
-    /** One-liner such as `07:00 nothing · 22:00 "Nightlight", off after 5 min · only when dark`. */
-    fun describe(slots: List<Slot>, onlyWhenDark: Boolean, sceneName: (String) -> String): String {
+    private fun fmtOffset(minutes: Int, base: String): String {
+        if (minutes == 0) return base
+        val abs = kotlin.math.abs(minutes)
+        val txt = if (abs % 60 == 0) "${abs / 60} h" else "$abs min"
+        return "$txt ${if (minutes < 0) "before" else "after"} $base"
+    }
+
+    fun describeDarkness(d: Darkness): String = when (d) {
+        is Darkness.AnyTime -> "any time"
+        is Darkness.SunsetToSunrise -> "only when dark (${fmtOffset(d.sunsetOffsetMinutes, "sunset")} → ${fmtOffset(d.sunriseOffsetMinutes, "sunrise")})"
+        is Darkness.Sensor -> {
+            val lux = lightLevelToLux(d.darkThreshold)
+            val txt = if (lux >= 10) lux.roundToInt().toString() else ((lux * 10).roundToInt() / 10.0).toString()
+            "only when dark (sensor below ~$txt lx)"
+        }
+    }
+
+    /** One-liner such as `07:00 nothing · 22:00 "Nightlight", off after 5 min · only when dark (…)`. */
+    fun describe(slots: List<Slot>, darkness: Darkness, sceneName: (String) -> String): String {
         fun act(a: Action) = when (a) { is Action.Scene -> "\"${sceneName(a.sceneId)}\""; Action.Off -> "off"; Action.Nothing -> "nothing" }
         val parts = slots.sortedBy { it.start.minutes }.map { s ->
             val then = if (s.onNoMotion is Action.Nothing) "" else ", ${act(s.onNoMotion)} after ${s.noMotionAfterMinutes} min"
             (if (slots.size > 1) "${s.start} " else "") + act(s.onMotion) + then
         }
-        return (parts + (if (onlyWhenDark) "only when dark" else "any time")).joinToString(" · ")
+        return (parts + describeDarkness(darkness)).joinToString(" · ")
     }
 }

@@ -1,5 +1,6 @@
 import { GAMUT_C, mirekToHex, mirekToKelvin, xyToHex } from './color.ts';
-import { describeMotionSlots, formatMotionTime, isMotionAutomation, parseAccessoryConfiguration, type MotionAction } from './automations.ts';
+import { describeMotionSlots, formatMotionTime, isMotionAutomation, parseAccessoryConfiguration, type Darkness, type MotionAction } from './automations.ts';
+import { describeRoutine, isRoutine, parseRoutineConfiguration } from './routines.ts';
 import type {
   BridgeHomeResource,
   BridgeResource,
@@ -22,8 +23,18 @@ import type {
   BehaviorInstanceResource,
 } from './types.ts';
 
+/** Power-on behaviour of a light (what it does after a power cut or a wall switch). */
+export interface PowerOnView {
+  preset: 'safety' | 'powerfail' | 'last_on_state' | 'custom' | string;
+  on?: 'on' | 'toggle' | 'previous';
+  brightness?: number;
+  mirek?: number;
+  xy?: XY;
+}
+
 export interface LightView {
   id: string;
+  powerOn?: PowerOnView;
   idV1?: string;
   name: string;
   archetype: string;
@@ -97,6 +108,9 @@ export interface SceneView {
 
 export interface AccessoryView {
   deviceId: string;
+  /** Room the device was placed in (rooms hold devices, so sensors have one too). */
+  roomId?: string;
+  roomName?: string;
   name: string;
   productName: string;
   modelId: string;
@@ -183,6 +197,7 @@ export interface MotionAutomationView {
   motionType: 'motion' | 'camera_motion';
   where: { id: string; kind: 'room' | 'zone'; name: string }[];
   onlyWhenDark: boolean;
+  darkness: Darkness;
   /** The bridge's darkness condition as stored (kept when updating). */
   lightLevel?: Record<string, unknown>;
   /** The bridge configuration verbatim: a PUT that changes only `enabled` is refused unless it is sent back too. */
@@ -191,8 +206,30 @@ export interface MotionAutomationView {
   summary: string;
 }
 
+/** A wake-up / go-to-sleep routine (bridge behavior_instance), or another automation managed in the Hue app. */
+export interface RoutineView {
+  id: string;
+  name: string;
+  kind: 'wake_up' | 'go_to_sleep' | 'other';
+  scriptId: string;
+  scriptName?: string;
+  enabled: boolean;
+  status?: string;
+  where: { id: string; kind: 'room' | 'zone'; name: string }[];
+  time?: string;
+  days?: string[];
+  fadeMinutes?: number;
+  endBrightness?: number;
+  turnOffAfterMinutes?: number | null;
+  endState?: 'nightlight' | 'turn_off';
+  summary: string;
+  /** Verbatim, for PUTs that only flip `enabled`. */
+  configuration: Record<string, unknown>;
+}
+
 export interface HomeModel {
   bridge?: BridgeInfo;
+  routines: RoutineView[];
   lights: LightView[];
   groups: GroupView[];
   rooms: GroupView[];
@@ -218,6 +255,7 @@ export const EMPTY_HOME: HomeModel = {
   accessories: [],
   cameras: [],
   motionAutomations: [],
+  routines: [],
   lightById: {},
   groupById: {},
   sceneById: {},
@@ -258,6 +296,17 @@ export function applyEvents(map: Map<string, Resource>, events: EventStreamUpdat
     }
   }
   return changed;
+}
+
+function powerOnView(p: LightResource['powerup']): PowerOnView | undefined {
+  if (!p?.preset) return undefined;
+  return {
+    preset: p.preset,
+    on: p.on?.mode,
+    brightness: p.dimming?.mode === 'dimming' ? p.dimming.dimming?.brightness : undefined,
+    mirek: p.color?.mode === 'color_temperature' ? p.color.color_temperature?.mirek : undefined,
+    xy: p.color?.mode === 'color' ? p.color.color?.xy : undefined,
+  };
 }
 
 export function lightLevelToLux(level: number): number {
@@ -335,12 +384,18 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
   let bridgeRaw: BridgeResource | undefined;
   let bridgeHome: BridgeHomeResource | undefined;
   const behaviors: BehaviorInstanceResource[] = [];
+  const scriptNames = new Map<string, string>();
 
   for (const r of byId.values()) {
     switch (r.type) {
       case 'behavior_instance':
         behaviors.push(r as BehaviorInstanceResource);
         break;
+      case 'behavior_script': {
+        const name = (r as unknown as { metadata?: { name?: string } }).metadata?.name;
+        if (name) scriptNames.set(r.id, name);
+        break;
+      }
       case 'light':
         lightsRaw.push(r as LightResource);
         break;
@@ -432,6 +487,7 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
       timedEffects: l.timed_effects?.effect_values ?? [],
       dynamicsActive: l.dynamics?.status === 'dynamic_palette',
       gradientPoints: l.gradient?.points?.map((p) => p.color.xy),
+      powerOn: powerOnView(l.powerup),
       connectivity: device ? zigbee.get(device.id)?.status : undefined,
       productName: device?.product_data?.product_name,
       modelId: device?.product_data?.model_id,
@@ -629,6 +685,8 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
   cameras.sort((a, b) => a.name.localeCompare(b.name));
 
   // Accessories --------------------------------------------------------------
+  const roomOfAccessory = new Map<string, GroupView>();
+  for (const g of groups) if (g.kind === 'room') for (const did of g.deviceIds) roomOfAccessory.set(did, g);
   const accessories: AccessoryView[] = [];
   for (const d of devicesRaw.values()) {
     const hasLight = (d.services ?? []).some((s) => s.rtype === 'light');
@@ -645,6 +703,8 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
     if (kind === 'other' && !t && !ll && !p) continue;
     accessories.push({
       deviceId: d.id,
+      roomId: roomOfAccessory.get(d.id)?.id,
+      roomName: roomOfAccessory.get(d.id)?.name,
       name: d.metadata?.name ?? d.product_data?.product_name ?? 'Device',
       productName: d.product_data?.product_name ?? '',
       modelId: d.product_data?.model_id ?? '',
@@ -735,14 +795,44 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
       motionServiceId: spec.motionServiceId,
       motionType: spec.motionType,
       where: spec.where.map((w) => ({ ...w, name: groupById[w.id]?.name ?? 'room' })),
-      onlyWhenDark: spec.onlyWhenDark,
+      onlyWhenDark: spec.darkness.mode !== 'any',
+      darkness: spec.darkness,
       lightLevel: (b.configuration.light_level as Record<string, unknown> | undefined) ?? undefined,
       configuration: b.configuration,
       slots: spec.slots.map((sl) => ({ start: formatMotionTime(sl.start), onMotion: toView(sl.onMotion), noMotionAfterMinutes: sl.noMotionAfterMinutes, onNoMotion: toView(sl.onNoMotion), doNotDisturb: !!sl.doNotDisturb })),
-      summary: describeMotionSlots(spec.slots, sceneName, spec.onlyWhenDark),
+      summary: describeMotionSlots(spec.slots, sceneName, spec.darkness),
     });
   }
   motionAutomations.sort((a, b) => a.sourceName.localeCompare(b.sourceName));
+
+  // Routines (wake up / go to sleep) and whatever else the Hue app set up ---------------
+  const routines: RoutineView[] = [];
+  for (const b of behaviors) {
+    if (isMotionAutomation(b)) continue;
+    const spec = isRoutine(b) ? parseRoutineConfiguration(b.script_id, b.configuration) : null;
+    const whereRaw = ((b.configuration?.where as { group?: { rid: string; rtype: string } }[] | undefined) ?? []).map((w) => w.group).filter((g): g is { rid: string; rtype: string } => !!g?.rid);
+    const where = (spec ? spec.where : whereRaw.map((g) => ({ id: g.rid, kind: (g.rtype === 'zone' ? 'zone' : 'room') as 'room' | 'zone' }))).map((w) => ({ ...w, name: groupById[w.id]?.name ?? (home && home.id === w.id ? 'All lights' : 'room') }));
+    const scriptName = scriptNames.get(b.script_id);
+    routines.push({
+      id: b.id,
+      name: b.metadata?.name?.trim() || scriptName || 'Automation',
+      kind: spec?.kind ?? 'other',
+      scriptId: b.script_id,
+      scriptName,
+      enabled: b.enabled !== false,
+      status: b.status,
+      where,
+      time: spec ? formatMotionTime(spec.time) : undefined,
+      days: spec?.days,
+      fadeMinutes: spec?.fadeMinutes,
+      endBrightness: spec?.endBrightness,
+      turnOffAfterMinutes: spec?.turnOffAfterMinutes,
+      endState: spec?.endState,
+      summary: spec ? describeRoutine(spec) : `${scriptName ?? 'automation'} (managed in the Hue app)`,
+      configuration: b.configuration ?? {},
+    });
+  }
+  routines.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
 
   return {
     bridge,
@@ -755,6 +845,7 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
     accessories,
     cameras,
     motionAutomations,
+    routines,
     lightById,
     groupById,
     sceneById,

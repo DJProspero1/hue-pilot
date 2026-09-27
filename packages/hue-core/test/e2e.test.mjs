@@ -266,9 +266,11 @@ test('e2e: motion automations — list, create, update, pause, delete, sensing',
   assert.ok(r.ok, r.message);
   const office = buildHome(await client.getAll()).motionAutomations.find((a) => a.id === seeded.id);
   assert.ok(office);
-  assert.equal(office.slots.length, 1);
+  assert.equal(office.slots.length, 2); // slots are kept; only what was said changes
   assert.equal(office.onlyWhenDark, false);
   assert.equal(office.slots[0].noMotionAfterMinutes, 2);
+  assert.equal(office.slots[1].noMotionAfterMinutes, 2);
+  assert.equal(office.slots[1].onMotion.sceneName, 'Focus');
   assert.equal(office.slots[0].onNoMotion.kind, 'off');
 
   // "on" picks a scene of the room; a scene of another room is refused with the room's scenes listed.
@@ -304,4 +306,204 @@ test('e2e: motion automations — list, create, update, pause, delete, sensing',
 
   assert.ok(buildSystemPrompt(home1).includes('Motion automations:'));
   assert.ok(buildSystemPrompt(home1).includes('set_motion_automation'));
+});
+
+test('e2e: darkness modes on a motion rule (sensor threshold, sun offsets, any)', async () => {
+  // The seeded office rule has two slots (07:00 nothing, 22:00 Focus). Changing only the darkness keeps both.
+  let r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', slots: [{ from: '07:00', on_motion: 'nothing', off_after_minutes: 10 }, { from: '22:00', on_motion: 'Focus', off_after_minutes: 5 }], darkness: 'sunset_to_sunrise' }, ctx());
+  assert.ok(r.ok, r.message);
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', darkness: 'sensor', dark_threshold_lux: 10 }, ctx());
+  assert.ok(r.ok, r.message);
+  let a = buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor');
+  assert.equal(a.slots.length, 2, 'slots kept when only darkness changes');
+  assert.equal(a.slots[1].onMotion.sceneName, 'Focus');
+  // A new scene goes to the slot that already recalls one; the "nothing" day slot stays.
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', on_motion: 'Focus', off_after_minutes: 7 }, ctx());
+  assert.ok(r.ok, r.message);
+  a = buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor');
+  assert.equal(a.slots.length, 2);
+  assert.equal(a.slots[0].onMotion.kind, 'nothing');
+  assert.equal(a.slots[0].noMotionAfterMinutes, 7);
+  assert.equal(a.slots[1].noMotionAfterMinutes, 7);
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', on_motion: 'Focus', darkness: 'sensor', dark_threshold_lux: 10 }, ctx());
+  assert.ok(r.ok, r.message);
+  a = buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor');
+  assert.equal(a.darkness.mode, 'sensor');
+  assert.equal(a.darkness.darkThreshold, 10001);
+  assert.ok(a.darkness.lightLevelServiceId);
+  assert.match(a.summary, /sensor below ~10 lx/);
+  r = await executeTool('list_motion_automations', {}, ctx());
+  const j = r.automations.find((x) => x.sensor === 'Office motion sensor');
+  assert.equal(j.darkness, 'sensor');
+  assert.equal(j.dark_threshold_lux, 10);
+  // Only the threshold changes; the mode is kept.
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', dark_threshold_lux: 3 }, ctx());
+  assert.ok(r.ok, r.message);
+  a = buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor');
+  assert.equal(a.darkness.mode, 'sensor');
+  assert.equal(Math.round(Math.pow(10, (a.darkness.darkThreshold - 1) / 10000)), 3);
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', darkness: 'sunset_to_sunrise', sunset_offset_minutes: -60 }, ctx());
+  assert.ok(r.ok, r.message);
+  a = buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor');
+  assert.deepEqual(a.darkness, { mode: 'sunset_to_sunrise', sunsetOffsetMinutes: -60, sunriseOffsetMinutes: 30 });
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', only_when_dark: false }, ctx());
+  assert.equal(buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor').darkness.mode, 'any');
+  // Several rooms at once.
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', rooms: ['Office', 'Living room'], on_motion: 'Focus' }, ctx());
+  assert.ok(r.ok, r.message);
+  a = buildHome(await client.getAll()).motionAutomations.find((x) => x.sourceName === 'Office motion sensor');
+  assert.deepEqual(a.where.map((w) => w.name.toLowerCase()), ['office', 'living room']);
+  r = await executeTool('set_motion_automation', { sensor: 'Front door camera', room: 'Office', on_motion: 'Focus', darkness: 'sensor' }, ctx());
+  assert.ok(r.ok, r.message); // cameras have a light-level service too
+  await executeTool('delete_motion_automation', { sensor: 'Front door camera' }, ctx());
+});
+
+test('e2e: sensor settings, rename, power-on behaviour', async () => {
+  let r = await executeTool('set_sensor_settings', { sensor: 'Office motion sensor', sensitivity: 'high' }, ctx());
+  assert.ok(r.ok, r.message);
+  let acc = buildHome(await client.getAll()).accessories.find((a) => a.name === 'Office motion sensor');
+  assert.equal(acc.motion.sensitivity, 4);
+  r = await executeTool('set_sensor_settings', { sensor: 'Office motion sensor', sensitivity: '1', name: 'Office sensor', room: 'Office' }, ctx());
+  assert.ok(r.ok, r.message);
+  acc = buildHome(await client.getAll()).accessories.find((a) => a.name === 'Office sensor');
+  assert.ok(acc, 'renamed sensor');
+  assert.equal(acc.motion.sensitivity, 1);
+  assert.equal(acc.roomName, 'Office');
+  r = await executeTool('get_sensor_readings', {}, ctx());
+  const reading = r.sensors.find((x) => x.device === 'Office sensor' && x.type === 'motion');
+  assert.equal(reading.sensitivity, 1);
+  assert.equal(reading.room, 'Office');
+  r = await executeTool('set_sensor_settings', { sensor: 'Office sensor', name: 'Office motion sensor' }, ctx());
+  assert.ok(r.ok, r.message);
+  r = await executeTool('set_sensor_settings', { sensor: 'Front door camera', sensitivity: 'high' }, ctx());
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'unsupported');
+
+  r = await executeTool('rename', { what: 'room', name: 'Office', new_name: 'Study' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.ok(buildHome(await client.getAll()).rooms.some((g) => g.name === 'Study'));
+  r = await executeTool('rename', { what: 'room', name: 'Study', new_name: 'Office' }, ctx());
+  assert.ok(r.ok, r.message);
+  const home = buildHome(await client.getAll());
+  const light = home.lights.find((l) => l.roomName === 'Office');
+  r = await executeTool('rename', { what: 'light', name: light.name, new_name: 'Reading lamp' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.ok(buildHome(await client.getAll()).lights.some((l) => l.name === 'Reading lamp'));
+  r = await executeTool('rename', { what: 'light', name: 'Reading lamp', new_name: light.name }, ctx());
+  assert.ok(r.ok, r.message);
+  r = await executeTool('rename', { what: 'scene', name: 'Focus', room: 'Office', new_name: 'Deep focus' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.ok(buildHome(await client.getAll()).scenes.some((s) => s.name === 'Deep focus'));
+  r = await executeTool('rename', { what: 'scene', name: 'Deep focus', new_name: 'Focus' }, ctx());
+  assert.ok(r.ok, r.message);
+
+  r = await executeTool('set_light_power_on_behavior', { target: light.name, mode: 'custom', brightness: 40, color_temperature: 'warm' }, ctx());
+  assert.ok(r.ok, r.message);
+  let l2 = buildHome(await client.getAll()).lightById[light.id];
+  assert.equal(l2.powerOn.preset, 'custom');
+  assert.equal(l2.powerOn.brightness, 40);
+  assert.ok(l2.powerOn.mirek > 300);
+  r = await executeTool('set_light_power_on_behavior', { target: 'Office', mode: 'last_state' }, ctx());
+  assert.ok(r.ok, r.message);
+  l2 = buildHome(await client.getAll()).lightById[light.id];
+  assert.equal(l2.powerOn.preset, 'last_on_state');
+  r = await executeTool('set_light_power_on_behavior', { target: light.name, mode: 'default' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.equal(buildHome(await client.getAll()).lightById[light.id].powerOn.preset, 'safety');
+});
+
+test('e2e: rooms, zones and scenes through the tools', async () => {
+  const home0 = buildHome(await client.getAll());
+  const office = home0.rooms.find((g) => g.name === 'Office');
+  const living = home0.rooms.find((g) => g.name.toLowerCase() === 'living room');
+  const l1 = home0.lightById[office.lightIds[0]];
+  const l2 = home0.lightById[living.lightIds[0]];
+  let r = await executeTool('create_group', { kind: 'zone', name: 'Evening', lights: [l1.name, l2.name], icon: 'lounge' }, ctx());
+  assert.ok(r.ok, r.message);
+  let zone = buildHome(await client.getAll()).zones.find((z) => z.name === 'Evening');
+  assert.ok(zone);
+  assert.deepEqual([...zone.lightIds].sort(), [l1.id, l2.id].sort());
+  assert.equal(zone.archetype, 'lounge');
+  r = await executeTool('update_group', { group: 'Evening', new_name: 'Evening lights', remove_lights: [l2.name], icon: 'tv' }, ctx());
+  assert.ok(r.ok, r.message);
+  zone = buildHome(await client.getAll()).zones.find((z) => z.name === 'Evening lights');
+  assert.ok(zone);
+  assert.deepEqual(zone.lightIds, [l1.id]);
+  assert.equal(zone.archetype, 'tv');
+  r = await executeTool('update_group', { group: 'Evening lights', add_lights: [l2.name] }, ctx());
+  assert.equal(buildHome(await client.getAll()).zones.find((z) => z.name === 'Evening lights').lightIds.length, 2);
+  // A room refuses a light that already has a room; sensors in the room are kept when its lights change.
+  r = await executeTool('create_group', { kind: 'room', name: 'Snug', lights: [l1.name] }, ctx());
+  assert.equal(r.ok, false);
+  r = await executeTool('update_group', { group: 'Office', lights: [l1.name] }, ctx());
+  assert.ok(r.ok, r.message);
+  const office2 = buildHome(await client.getAll()).rooms.find((g) => g.name === 'Office');
+  assert.deepEqual(office2.lightIds, [l1.id]);
+  assert.ok(buildHome(await client.getAll()).accessories.find((a) => a.name === 'Office motion sensor').roomId === office2.id, 'sensor stays in the room');
+  r = await executeTool('update_group', { group: 'Office', lights: office.lightIds.map((id) => home0.lightById[id].name) }, ctx());
+  assert.ok(r.ok, r.message);
+  r = await executeTool('delete_group', { group: 'Evening lights' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.ok(!buildHome(await client.getAll()).zones.some((z) => z.name === 'Evening lights'));
+
+  r = await executeTool('create_scene', { name: 'Reading', room: 'Office', lights: [{ light: l1.name, brightness: 35, color_temperature: 'warm' }], speed: 0.4 }, ctx());
+  assert.ok(r.ok, r.message);
+  let scene = buildHome(await client.getAll()).scenes.find((s) => s.name === 'Reading');
+  assert.ok(scene);
+  assert.equal(scene.groupId, office.id);
+  const act = scene.actions.find((a) => a.target.rid === l1.id);
+  assert.equal(act.action.dimming.brightness, 35);
+  assert.ok(act.action.color_temperature.mirek > 300);
+  r = await executeTool('update_scene', { scene: 'Reading', room: 'Office', new_name: 'Reading nook', speed: 0.9, lights: [{ light: l1.name, brightness: 60 }] }, ctx());
+  assert.ok(r.ok, r.message);
+  scene = buildHome(await client.getAll()).scenes.find((s) => s.name === 'Reading nook');
+  assert.ok(scene);
+  assert.equal(scene.actions.find((a) => a.target.rid === l1.id).action.dimming.brightness, 60);
+  r = await executeTool('delete_scene', { scene: 'Reading nook', room: 'Office' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.ok(!buildHome(await client.getAll()).scenes.some((s) => s.name === 'Reading nook'));
+});
+
+test('e2e: wake-up and go-to-sleep routines', async () => {
+  let r = await executeTool('set_wake_up', { rooms: ['Bedroom'], time: '7:15', days: ['weekdays'], fade_minutes: 20, end_brightness: 80, turn_off_after_minutes: 30 }, ctx());
+  assert.ok(r.ok, r.message);
+  let rt = buildHome(await client.getAll()).routines.find((x) => x.kind === 'wake_up');
+  assert.ok(rt);
+  assert.equal(rt.time, '07:15');
+  assert.equal(rt.fadeMinutes, 20);
+  assert.equal(rt.endBrightness, 80);
+  assert.equal(rt.turnOffAfterMinutes, 30);
+  assert.equal(rt.where[0].name, 'Bedroom');
+  assert.match(rt.summary, /weekdays/);
+  // Same rooms → the same routine is updated, not duplicated.
+  r = await executeTool('set_wake_up', { rooms: ['Bedroom'], time: '06:45', turn_off_after_minutes: 0 }, ctx());
+  assert.ok(r.ok, r.message);
+  const wakes = buildHome(await client.getAll()).routines.filter((x) => x.kind === 'wake_up');
+  assert.equal(wakes.length, 1);
+  assert.equal(wakes[0].time, '06:45');
+  assert.equal(wakes[0].turnOffAfterMinutes, null);
+  assert.equal(wakes[0].fadeMinutes, 20);
+  r = await executeTool('set_go_to_sleep', { rooms: ['Bedroom', 'Living room'], time: '23:30', fade_minutes: 15, end: 'off', name: 'Bedtime' }, ctx());
+  assert.ok(r.ok, r.message);
+  rt = buildHome(await client.getAll()).routines.find((x) => x.name === 'Bedtime');
+  assert.equal(rt.kind, 'go_to_sleep');
+  assert.equal(rt.endState, 'turn_off');
+  assert.equal(rt.where.length, 2);
+  r = await executeTool('list_routines', {}, ctx());
+  assert.ok(r.ok);
+  assert.equal(r.routines.length, 2);
+  assert.equal(r.routines.find((x) => x.name === 'Bedtime').end, 'off');
+  r = await executeTool('set_go_to_sleep', { rooms: ['Bedroom'], time: '23:00', name: 'Bedtime', enabled: false }, ctx());
+  assert.ok(r.ok, r.message);
+  rt = buildHome(await client.getAll()).routines.find((x) => x.name === 'Bedtime');
+  assert.equal(rt.enabled, false);
+  assert.equal(rt.where.length, 1);
+  assert.ok(buildSystemPrompt(buildHome(await client.getAll())).includes('Routines:'));
+  r = await executeTool('delete_routine', { routine: 'Bedtime' }, ctx());
+  assert.ok(r.ok, r.message);
+  r = await executeTool('delete_routine', { routine: wakes[0].id }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.equal(buildHome(await client.getAll()).routines.length, 0);
+  r = await executeTool('delete_routine', { routine: 'Bedtime' }, ctx());
+  assert.equal(r.error, 'not_found');
 });

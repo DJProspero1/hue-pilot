@@ -86,7 +86,13 @@ export interface LightResource extends ResourceBase {
     mode_values: string[];
     pixel_count?: number;
   };
-  powerup?: { preset: string; configured: boolean };
+  powerup?: {
+    preset: 'safety' | 'powerfail' | 'last_on_state' | 'custom' | string;
+    configured?: boolean;
+    on?: { mode: 'on' | 'toggle' | 'previous'; on?: { on: boolean } };
+    dimming?: { mode: 'dimming' | 'previous'; dimming?: { brightness: number } };
+    color?: { mode: 'color_temperature' | 'color' | 'previous'; color_temperature?: { mirek: number }; color?: { xy: XY } };
+  };
   service_id?: number;
 }
 

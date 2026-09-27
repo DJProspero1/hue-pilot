@@ -607,6 +607,14 @@ export function createMockBridge({ port = 8080, host = '0.0.0.0', log = true, si
         const body = await readBody(req);
         const r = resources.get(id);
         if (!r || r.type !== type) return json(res, 404, { errors: [{ description: `resource ${type}/${id} not found` }], data: [] });
+        if (type === 'light' && body.powerup) {
+          r.powerup = { ...(r.powerup ?? {}), ...body.powerup, configured: true };
+          emit('update', [{ id, id_v1: r.id_v1, type, powerup: r.powerup }]);
+          const rest = { ...body };
+          delete rest.powerup;
+          if (!Object.keys(rest).length) return json(res, 200, { errors: [], data: [{ rid: id, rtype: type }] });
+          return json(res, 200, { errors: [], data: updateLight(id, rest) });
+        }
         if (type === 'light') return json(res, 200, { errors: [], data: updateLight(id, body) });
         if (type === 'grouped_light') return json(res, 200, { errors: [], data: updateGroupedLight(id, body) });
         if (type === 'scene') {

@@ -6,13 +6,21 @@
  *
  * Facts about the bridge (verified on a Bridge Pro, 2026-09-27):
  * - one instance per source device; a POST for a device that already has one updates it (same id);
- * - `light_level` is optional: absent means "any time of day", `sunrise_sunset` means only when dark;
+ * - PUT must not carry `script_id`, and a PUT with only `enabled` is refused: send the rule back;
+ * - `light_level` is optional: absent = any time of day; `sunrise_sunset` = only when dark by the
+ *   sun (offsets in hours or minutes); `daylight_sensitivity` = only when the sensor's own light
+ *   level is below `dark_threshold` (both `dark_threshold` and `offset` are required; the service
+ *   may be a `light_level` or a room's `grouped_light_level`);
  * - each timeslot starts at a clock time and lasts until the next one (wrapping past midnight).
  */
 import type { BehaviorInstanceResource } from './types.ts';
 
 /** The "Hue Accessories" behavior script (motion sensors and cameras). */
 export const ACCESSORY_SCRIPT_ID = '67d9395b-4403-42cc-b5f0-740b699d67c6';
+
+/** What the Hue app stores when "daylight sensitivity" is set to its default (about 5 lux). */
+export const DEFAULT_DARK_THRESHOLD = 7267;
+export const DEFAULT_DARK_OFFSET = 7000;
 
 export interface MotionTime {
   hour: number;
@@ -33,17 +41,29 @@ export interface MotionSlot {
   doNotDisturb?: boolean;
 }
 
+/** When the rule is allowed to act. */
+export type Darkness =
+  | { mode: 'any' }
+  | { mode: 'sunset_to_sunrise'; sunsetOffsetMinutes: number; sunriseOffsetMinutes: number }
+  | { mode: 'sensor'; lightLevelServiceId: string; lightLevelType: 'light_level' | 'grouped_light_level'; darkThreshold: number; offset: number };
+
 export interface MotionAutomationSpec {
   sourceDeviceId: string;
   motionServiceId: string;
   motionType: 'motion' | 'camera_motion';
   where: { id: string; kind: 'room' | 'zone' }[];
-  onlyWhenDark: boolean;
+  darkness: Darkness;
   slots: MotionSlot[];
 }
 
-/** Default "dark" window: from half an hour before sunset to half an hour after sunrise. */
-const DEFAULT_DARK = { daylight: { sunrise_sunset: { sunrise_offset: { minutes: 30 }, sunset_offset: { minutes: -30 } } } };
+/** The bridge's light-level scale: 10000 · log10(lux) + 1. */
+export function luxToLightLevel(lux: number): number {
+  return Math.max(0, Math.round(10000 * Math.log10(Math.max(0.01, lux)) + 1));
+}
+
+export function lightLevelToLuxValue(level: number): number {
+  return Math.pow(10, (level - 1) / 10000);
+}
 
 function actionToBridge(a: MotionAction): unknown {
   if (a.kind === 'scene') return { recall: { rid: a.sceneId, rtype: 'scene' } };
@@ -59,11 +79,41 @@ function actionFromBridge(v: unknown): MotionAction {
   return { kind: 'nothing' };
 }
 
-/**
- * The bridge configuration for a spec. `existingLightLevel` keeps a sensor-based darkness
- * condition set up in the Hue app when the automation is updated with `onlyWhenDark` still on.
- */
-export function buildAccessoryConfiguration(spec: MotionAutomationSpec, existingLightLevel?: Record<string, unknown>): Record<string, unknown> {
+function offsetToBridge(minutes: number): { hours: number } | { minutes: number } {
+  return minutes !== 0 && minutes % 60 === 0 ? { hours: minutes / 60 } : { minutes };
+}
+
+function offsetFromBridge(v: unknown): number {
+  const o = (v ?? {}) as { hours?: number; minutes?: number };
+  return (o.hours ?? 0) * 60 + (o.minutes ?? 0);
+}
+
+export function buildLightLevelCondition(d: Darkness): Record<string, unknown> | undefined {
+  if (d.mode === 'sunset_to_sunrise') return { daylight: { sunrise_sunset: { sunrise_offset: offsetToBridge(d.sunriseOffsetMinutes), sunset_offset: offsetToBridge(d.sunsetOffsetMinutes) } } };
+  if (d.mode === 'sensor') return { daylight: { daylight_sensitivity: { light_level_service: { rid: d.lightLevelServiceId, rtype: d.lightLevelType }, settings: { dark_threshold: d.darkThreshold, offset: d.offset } } } };
+  return undefined;
+}
+
+export function parseLightLevelCondition(v: unknown): Darkness {
+  const daylight = (v as { daylight?: Record<string, unknown> } | undefined)?.daylight;
+  if (!daylight) return { mode: 'any' };
+  const ss = daylight.sunrise_sunset as { sunrise_offset?: unknown; sunset_offset?: unknown } | undefined;
+  if (ss) return { mode: 'sunset_to_sunrise', sunsetOffsetMinutes: offsetFromBridge(ss.sunset_offset), sunriseOffsetMinutes: offsetFromBridge(ss.sunrise_offset) };
+  const ds = daylight.daylight_sensitivity as { light_level_service?: { rid: string; rtype: string }; settings?: { dark_threshold?: number; offset?: number } } | undefined;
+  if (ds?.light_level_service?.rid) {
+    return {
+      mode: 'sensor',
+      lightLevelServiceId: ds.light_level_service.rid,
+      lightLevelType: ds.light_level_service.rtype === 'grouped_light_level' ? 'grouped_light_level' : 'light_level',
+      darkThreshold: ds.settings?.dark_threshold ?? DEFAULT_DARK_THRESHOLD,
+      offset: ds.settings?.offset ?? DEFAULT_DARK_OFFSET,
+    };
+  }
+  return { mode: 'sunset_to_sunrise', sunsetOffsetMinutes: -30, sunriseOffsetMinutes: 30 };
+}
+
+/** The bridge configuration for a spec (round-trips what the Hue app writes). */
+export function buildAccessoryConfiguration(spec: MotionAutomationSpec): Record<string, unknown> {
   const slots = [...spec.slots].sort((a, b) => a.start.hour * 60 + a.start.minute - (b.start.hour * 60 + b.start.minute));
   const configuration: Record<string, unknown> = {
     source: { rid: spec.sourceDeviceId, rtype: 'device' },
@@ -80,7 +130,8 @@ export function buildAccessoryConfiguration(spec: MotionAutomationSpec, existing
       },
     },
   };
-  if (spec.onlyWhenDark) configuration.light_level = existingLightLevel ?? DEFAULT_DARK;
+  const ll = buildLightLevelCondition(spec.darkness);
+  if (ll) configuration.light_level = ll;
   return configuration;
 }
 
@@ -112,7 +163,7 @@ export function parseAccessoryConfiguration(configuration: Record<string, unknow
       .map((w) => w.group)
       .filter((g): g is { rid: string; rtype: string } => !!g?.rid)
       .map((g) => ({ id: g.rid, kind: g.rtype === 'zone' ? 'zone' : 'room' })),
-    onlyWhenDark: !!configuration.light_level,
+    darkness: parseLightLevelCondition(configuration.light_level),
     slots,
   };
 }
@@ -121,12 +172,12 @@ export function parseAccessoryConfiguration(configuration: Record<string, unknow
  * Body for behavior_instance. POST needs `script_id`; PUT refuses it ("property: script_id not
  * allowed"), so pass `forUpdate` when rewriting an existing rule.
  */
-export function buildBehaviorInstanceBody(spec: MotionAutomationSpec, opts: { name: string; enabled: boolean; existingLightLevel?: Record<string, unknown>; forUpdate?: boolean }): Record<string, unknown> {
+export function buildBehaviorInstanceBody(spec: MotionAutomationSpec, opts: { name: string; enabled: boolean; forUpdate?: boolean }): Record<string, unknown> {
   return {
     ...(opts.forUpdate ? {} : { script_id: ACCESSORY_SCRIPT_ID }),
     enabled: opts.enabled,
     metadata: { name: opts.name.slice(0, 32) },
-    configuration: buildAccessoryConfiguration(spec, opts.existingLightLevel),
+    configuration: buildAccessoryConfiguration(spec),
   };
 }
 
@@ -154,12 +205,28 @@ export function formatMotionTime(t: MotionTime): string {
   return `${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')}`;
 }
 
-/** Sensor-oriented one-liner, e.g. `07:00 nothing, off after 10 min · 22:00 "Nightlight", off after 5 min · only when dark`. */
-export function describeMotionSlots(slots: MotionSlot[], sceneName: (id: string) => string, onlyWhenDark: boolean): string {
+function fmtOffset(minutes: number, base: string): string {
+  if (minutes === 0) return base;
+  const abs = Math.abs(minutes);
+  const txt = abs % 60 === 0 ? `${abs / 60} h` : `${abs} min`;
+  return `${txt} ${minutes < 0 ? 'before' : 'after'} ${base}`;
+}
+
+export function describeDarkness(d: Darkness): string {
+  if (d.mode === 'any') return 'any time';
+  if (d.mode === 'sunset_to_sunrise') return `only when dark (${fmtOffset(d.sunsetOffsetMinutes, 'sunset')} → ${fmtOffset(d.sunriseOffsetMinutes, 'sunrise')})`;
+  const lux = lightLevelToLuxValue(d.darkThreshold);
+  return `only when dark (sensor below ~${lux >= 10 ? Math.round(lux) : Math.round(lux * 10) / 10} lx)`;
+}
+
+/** Sensor-oriented one-liner, e.g. `07:00 nothing, off after 10 min · 22:00 "Nightlight", off after 5 min · only when dark (…)`. */
+export function describeMotionSlots(slots: MotionSlot[], sceneName: (id: string) => string, darkness: Darkness | boolean): string {
   const action = (a: MotionAction) => (a.kind === 'scene' ? `"${sceneName(a.sceneId)}"` : a.kind === 'off' ? 'off' : 'nothing');
-  const parts = slots.map((s) => {
+  const sorted = [...slots].sort((a, b) => a.start.hour * 60 + a.start.minute - (b.start.hour * 60 + b.start.minute));
+  const parts = sorted.map((s) => {
     const then = s.onNoMotion.kind === 'nothing' ? '' : `, ${action(s.onNoMotion)} after ${s.noMotionAfterMinutes} min`;
-    return `${slots.length > 1 ? `${formatMotionTime(s.start)} ` : ''}${action(s.onMotion)}${then}`;
+    return `${sorted.length > 1 ? `${formatMotionTime(s.start)} ` : ''}${action(s.onMotion)}${then}`;
   });
-  return [...parts, onlyWhenDark ? 'only when dark' : 'any time'].join(' · ');
+  const tail = typeof darkness === 'boolean' ? (darkness ? 'only when dark' : 'any time') : describeDarkness(darkness);
+  return [...parts, tail].join(' · ');
 }
