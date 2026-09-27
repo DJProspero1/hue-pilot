@@ -193,13 +193,6 @@ export interface HueApi {
   /** Recent cloud/live-view log lines (for the diagnostics panel). */
   cloudLog(): Promise<string[]>;
 
-  // phone mirror ("watch live on this PC" through the Philips Hue app on an Android phone)
-  getMirrorStatus(): Promise<MirrorStatus>;
-  mirrorInstall(): Promise<MirrorStatus>;
-  mirrorRefreshDevices(): Promise<MirrorStatus>;
-  mirrorConnect(address: string): Promise<MirrorStatus>;
-  mirrorStart(serial?: string): Promise<MirrorStatus>;
-  mirrorStop(): Promise<MirrorStatus>;
   searchLights(): Promise<void>;
   updateGroupChildren(type: 'room' | 'zone', id: string, children: { rid: string; rtype: string }[]): Promise<void>;
   createGroup(type: 'room' | 'zone', name: string, archetype: string, children: { rid: string; rtype: string }[]): Promise<string>;
@@ -237,7 +230,6 @@ export interface HueApi {
   onNavigate(cb: (route: string) => void): () => void;
   onSettings(cb: (settings: Settings) => void): () => void;
   onMotionEvent(cb: (event: MotionEvent) => void): () => void;
-  onMirrorStatus(cb: (status: MirrorStatus) => void): () => void;
   onCloudStatus(cb: (status: CloudStatus) => void): () => void;
   onCloudLog(cb: (line: string) => void): () => void;
 }
@@ -296,29 +288,3 @@ export interface LiveViewSession {
   expiresAt: number;
 }
 
-/** An Android device known to adb. */
-export interface MirrorDevice {
-  serial: string;
-  /** `device` (ready), `unauthorized` (accept the prompt on the phone), `offline`, … */
-  state: string;
-  model: string | null;
-  transport: 'usb' | 'wifi' | 'emulator';
-}
-
-export interface MirrorStatus {
-  /** Windows only. */
-  supported: boolean;
-  installed: boolean;
-  installing: boolean;
-  /** Download progress 0..100 while installing. */
-  progress: number | null;
-  running: boolean;
-  /** Serial of the phone being mirrored. */
-  serial: string | null;
-  devices: MirrorDevice[];
-  error: string | null;
-  /** What the user should do next, when something is missing. */
-  hint: string | null;
-  version: string;
-  hueApp: string;
-}

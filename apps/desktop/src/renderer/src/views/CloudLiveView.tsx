@@ -214,7 +214,7 @@ function LiveViewPlayer({ session, protectedHint, onLog, onClose }: { session: L
         };
       });
 
-    const CANNOT_START = 'The Hue cloud, the Kinesis credentials and the signaling channel all work, but the camera never joins the stream. Philips cameras only start their live view when the Hue app tells them to over Signify\'s own private (MQTT) channel, which Hue Pilot cannot reproduce. Verified against this account: even a silent viewer waiting a full minute gets no offer. Use "Watch live on this PC" below (phone mirror) to see the live feed on the desktop today.';
+    const CANNOT_START = 'The Hue cloud, the Kinesis credentials and the signaling channel all work, but the camera did not join the stream in time. This is the step Hue Pilot is still working on: the camera has to be told to start over Signify\'s encrypted channel. Try again, and check the diagnostics below.';
 
     const run = async () => {
       // The camera is the WebRTC offerer once the Hue app starts its live view. We connect as a
@@ -475,7 +475,7 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
       {session && <LiveViewPlayer session={session} protectedHint={cloudCams.find((c) => c.id === session.cameraId)?.liveViewProtected ?? null} onLog={addLog} onClose={() => setSession(null)} />}
 
       <div className="mt-3 text-xs text-muted">
-        <span className="font-medium">Experimental, and not yet working end to end.</span> Hue Pilot signs in, lists your cameras and gets live-stream credentials from the Hue cloud, but the camera only begins streaming when the Hue app tells it to over Signify's private channel, which this build cannot reproduce. To watch the live feed on this PC today, use <span className="font-medium">Watch live on this PC</span> below, which mirrors your phone and opens the Hue app on it.
+        <span className="font-medium">Experimental.</span> Hue Pilot signs in, lists your cameras and opens the Hue cloud's Kinesis WebRTC stream directly on this PC. The last step, getting the camera to begin streaming on request, is still being worked out.
       </div>
 
       <div className="mt-2">
