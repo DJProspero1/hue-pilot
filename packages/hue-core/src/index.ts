@@ -3,4 +3,5 @@ export * from './color.ts';
 export * from './model.ts';
 export * from './matching.ts';
 export * from './schedules.ts';
+export * from './automations.ts';
 export * from './tools.ts';

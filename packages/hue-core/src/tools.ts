@@ -3,8 +3,9 @@
  * The Android app implements the same contract natively.
  */
 import { kelvinToRgb, mirekToKelvin, parseColor, parseColorTemperature, rgbToXy } from './color.ts';
-import { resolveByName } from './matching.ts';
-import type { AccessoryView, CameraView, GroupView, HomeModel, LightView, SceneView } from './model.ts';
+import { normalizeName, resolveByName } from './matching.ts';
+import type { AccessoryView, CameraView, GroupView, HomeModel, LightView, MotionAutomationView, SceneView } from './model.ts';
+import { buildBehaviorInstanceBody, describeMotionSlots, formatMotionTime, parseMotionTime, type MotionAction, type MotionAutomationSpec, type MotionSlot } from './automations.ts';
 import { buildLocalTime, buildScheduleCommand, describeLocalTime, parseLocalTime, parseScheduleCommand, v1Id } from './schedules.ts';
 import type { LightState, ResourceRef, ScheduleMapV1, ScheduleV1 } from './types.ts';
 
@@ -18,6 +19,11 @@ export interface HueClientLike {
   deleteSchedule(id: string): Promise<unknown>;
   /** Turn a Hue Secure camera's motion detection on or off (PUT camera_motion/{id} { enabled }). */
   setCameraMotionDetection(cameraMotionId: string, enabled: boolean): Promise<ResourceRef[]>;
+  /** Motion sensing on/off for a motion sensor or a camera. */
+  setSensorEnabled(type: 'motion' | 'camera_motion', id: string, enabled: boolean): Promise<ResourceRef[]>;
+  createBehaviorInstance(body: Record<string, unknown>): Promise<ResourceRef[]>;
+  updateBehaviorInstance(id: string, body: Record<string, unknown>): Promise<ResourceRef[]>;
+  deleteBehaviorInstance(id: string): Promise<ResourceRef[]>;
 }
 
 export interface ToolContext {
@@ -195,6 +201,63 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: 'Delete a schedule by id (see list_schedules).',
     parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
   },
+  {
+    name: 'list_motion_automations',
+    description:
+      'List what each motion sensor and Hue Secure camera makes the lights do on motion (the bridge-side automations, one per sensor): which room, which scene on motion, what happens after no motion, time slots, and whether it only works when dark.',
+    parameters: { type: 'object', properties: {} },
+    readOnly: true,
+  },
+  {
+    name: 'set_motion_automation',
+    description:
+      'Create or replace the automation of a motion sensor or camera (runs on the bridge, app closed or not). Simple form: on_motion (a scene of that room, e.g. "Bright", or "nothing"), off_after_minutes, optional from/until clock window (outside it the sensor does nothing), only_when_dark. For different day/night behaviour pass slots instead. To only pause/resume an existing automation pass just sensor and enabled. When the user does not say, ask whether it should work only when dark.',
+    parameters: {
+      type: 'object',
+      properties: {
+        sensor: { type: 'string', description: 'Motion sensor or camera name.' },
+        room: { type: 'string', description: 'Room or zone whose lights it controls. Defaults to the existing automation\'s room.' },
+        on_motion: { type: 'string', description: 'Scene name to activate when motion starts (must belong to the room), "on" for the room\'s brightest scene, or "nothing".' },
+        off_after_minutes: { type: 'number', description: 'Minutes without motion before on_no_motion happens (default 5).' },
+        on_no_motion: { type: 'string', description: '"off" (default), "nothing", or a scene name.' },
+        from: { type: 'string', description: 'Start of the active window, HH:MM. Omit for all day.' },
+        until: { type: 'string', description: 'End of the active window, HH:MM.' },
+        only_when_dark: { type: 'boolean', description: 'true = only between sunset and sunrise; false = any time of day.' },
+        do_not_disturb: { type: 'boolean', description: 'true = leave the lights alone when someone changed them by hand.' },
+        enabled: { type: 'boolean', description: 'false pauses the automation, true resumes it.' },
+        name: { type: 'string', description: 'Optional name; defaults to the sensor name.' },
+        slots: {
+          type: 'array',
+          description: 'Advanced: time slots, each active from its "from" until the next slot. Replaces on_motion/off_after_minutes/on_no_motion/from/until.',
+          items: {
+            type: 'object',
+            properties: {
+              from: { type: 'string', description: 'HH:MM' },
+              on_motion: { type: 'string', description: 'Scene name, "on" or "nothing".' },
+              off_after_minutes: { type: 'number' },
+              on_no_motion: { type: 'string', description: '"off", "nothing" or a scene name.' },
+            },
+            required: ['from'],
+          },
+        },
+      },
+      required: ['sensor'],
+    },
+  },
+  {
+    name: 'delete_motion_automation',
+    description: 'Remove the motion automation of a sensor or camera, so motion no longer changes any light.',
+    parameters: { type: 'object', properties: { sensor: { type: 'string', description: 'Motion sensor or camera name (or the automation id from list_motion_automations).' } }, required: ['sensor'] },
+  },
+  {
+    name: 'set_motion_sensing',
+    description: 'Switch motion sensing itself on or off for a motion sensor or a Hue Secure camera (off = it stops reporting motion; its automation then never fires).',
+    parameters: {
+      type: 'object',
+      properties: { sensor: { type: 'string', description: 'Motion sensor or camera name.' }, enabled: { type: 'boolean' } },
+      required: ['sensor', 'enabled'],
+    },
+  },
 ];
 
 // -----------------------------------------------------------------------------
@@ -280,6 +343,55 @@ export function resolveCamera(query: string, home: HomeModel): { camera?: Camera
   if (r.match) return { camera: r.match };
   if (r.candidates.length > 1) return { result: ambiguous('cameras', r.candidates) };
   return { result: notFound('camera', query, cameras.map((c) => c.name)) };
+}
+
+export interface MotionSource {
+  /** Device id (what resolveByName keys on). */
+  id: string;
+  deviceId: string;
+  name: string;
+  kind: 'sensor' | 'camera';
+  motionServiceId: string;
+  motionType: 'motion' | 'camera_motion';
+  enabled: boolean;
+  /** Room the device sits in (cameras only, when known). */
+  roomName?: string;
+}
+
+/** Every device that can report motion: motion sensors and Hue Secure cameras. */
+export function motionSources(home: HomeModel): MotionSource[] {
+  const out: MotionSource[] = [];
+  for (const a of home.accessories) if (a.motion) out.push({ id: a.deviceId, deviceId: a.deviceId, name: a.name, kind: 'sensor', motionServiceId: a.motion.sensorId, motionType: 'motion', enabled: a.motion.enabled });
+  for (const c of home.cameras ?? []) if (c.cameraMotionId) out.push({ id: c.id, deviceId: c.id, name: c.name, kind: 'camera', motionServiceId: c.cameraMotionId, motionType: 'camera_motion', enabled: c.motionEnabled, roomName: c.roomName });
+  return out;
+}
+
+/** Words that name the kind of device rather than the device: ignored when matching a sensor or camera. */
+const GENERIC_SOURCE_WORDS = new Set(['sensor', 'sensors', 'camera', 'cameras', 'cam', 'motion', 'detector', 'hue', 'secure', 'camara', 'sensores', 'movimento']);
+
+/**
+ * Sensors and cameras are matched more strictly than rooms: one shared word ("garage sensor" vs
+ * "Office motion sensor") is not a match, because the caller may be about to delete a rule.
+ */
+export function resolveMotionSource(query: string, home: HomeModel): { source?: MotionSource; result?: ToolResult } {
+  const sources = motionSources(home);
+  const label = (s: MotionSource) => `${s.name} (${s.kind})`;
+  const tryMatch = (q: string): { source?: MotionSource; result?: ToolResult } | null => {
+    if (!q.trim()) return null;
+    const r = resolveByName(q, sources);
+    if (r.score < 62) return null;
+    if (r.match) return { source: r.match };
+    if (r.candidates.length > 1) return { result: ambiguous('sensors', r.candidates, label) };
+    return null;
+  };
+  const stripped = normalizeName(query).split(' ').filter((w) => w && !GENERIC_SOURCE_WORDS.has(w)).join(' ');
+  const hit = tryMatch(stripped) ?? tryMatch(query);
+  if (hit) return hit;
+  // A camera is often called by its room ("the driveway camera" for the camera in Driveway).
+  const q = normalizeName(stripped || query);
+  const byRoom = sources.filter((s) => s.roomName && normalizeName(s.roomName) === q);
+  if (byRoom.length === 1) return { source: byRoom[0] };
+  return { result: notFound('motion sensor or camera', query, sources.map(label)) };
 }
 
 export function resolveScene(query: string, home: HomeModel, roomHint?: string): { scene?: SceneView; result?: ToolResult } {
@@ -674,12 +786,163 @@ export async function executeTool(name: string, rawArgs: Record<string, unknown>
         return { ok: true, message: `Schedule ${id} deleted` };
       }
 
+      case 'list_motion_automations': {
+        const home = await ctx.getHome();
+        const automations = home.motionAutomations.map(automationJson);
+        const without = motionSources(home).filter((s) => !home.motionAutomations.some((a) => a.sourceDeviceId === s.deviceId)).map((s) => s.name);
+        return { ok: true, automations, sensors_without_automation: without };
+      }
+
+      case 'set_motion_automation':
+        return setMotionAutomation(args, ctx);
+
+      case 'delete_motion_automation': {
+        const home = await ctx.getHome();
+        const q = str(args.sensor) || str(args.id);
+        let auto = home.motionAutomations.find((a) => a.id === q);
+        if (!auto) {
+          const { source, result } = resolveMotionSource(q, home);
+          if (!source) return result!;
+          auto = home.motionAutomations.find((a) => a.sourceDeviceId === source.deviceId);
+          if (!auto) return { ok: false, error: 'not_found', message: `${source.name} has no motion automation.` };
+        }
+        await ctx.client.deleteBehaviorInstance(auto.id);
+        return { ok: true, message: `Removed the motion automation of ${auto.sourceName}; motion no longer changes the lights.`, id: auto.id };
+      }
+
+      case 'set_motion_sensing': {
+        const home = await ctx.getHome();
+        const enabled = bool(args.enabled);
+        if (enabled === undefined) return { ok: false, error: 'invalid_argument', message: 'enabled must be true or false' };
+        const { source, result } = resolveMotionSource(str(args.sensor), home);
+        if (!source) return result!;
+        await ctx.client.setSensorEnabled(source.motionType, source.motionServiceId, enabled);
+        return { ok: true, message: `${source.name}: motion sensing ${enabled ? 'on' : 'off'}`, sensor: { name: source.name, kind: source.kind }, applied: { enabled } };
+      }
+
       default:
         return { ok: false, error: 'unknown_tool', message: `Unknown tool ${name}` };
     }
   } catch (err) {
     return { ok: false, error: 'bridge_error', message: (err as Error).message ?? String(err) };
   }
+}
+
+function automationJson(a: MotionAutomationView) {
+  const act = (x: { kind: string; sceneName?: string }) => (x.kind === 'scene' ? `scene "${x.sceneName}"` : x.kind);
+  return {
+    id: a.id,
+    name: a.name,
+    sensor: a.sourceName,
+    kind: a.sourceKind,
+    enabled: a.enabled,
+    status: a.status,
+    rooms: a.where.map((w) => w.name),
+    only_when_dark: a.onlyWhenDark,
+    slots: a.slots.map((s) => ({ from: s.start, on_motion: act(s.onMotion), off_after_minutes: s.noMotionAfterMinutes, on_no_motion: act(s.onNoMotion), do_not_disturb: s.doNotDisturb })),
+    summary: a.summary,
+  };
+}
+
+function parseAction(raw: unknown, home: HomeModel, group: GroupView, fallback: MotionAction, allowOff: boolean): { action?: MotionAction; result?: ToolResult } {
+  const q = str(raw).trim();
+  if (!q) return { action: fallback };
+  const lc = q.toLowerCase();
+  if (['nothing', 'none', 'no', 'do nothing', 'keep', 'leave', 'nada'].includes(lc)) return { action: { kind: 'nothing' } };
+  if (allowOff && ['off', 'all off', 'turn off', 'lights off', 'desligar', 'apagar'].includes(lc)) return { action: { kind: 'off' } };
+  const roomScenes = home.scenes.filter((s) => s.groupId === group.id);
+  if (['on', 'true', 'turn on', 'lights on', 'bright', 'ligar', 'acender'].includes(lc)) {
+    const preferred = ['bright', 'concentrate', 'energize', 'read', 'normal', 'relax'];
+    const pick = preferred.map((p) => roomScenes.find((s) => s.name.toLowerCase() === p)).find(Boolean) ?? roomScenes[0];
+    if (!pick) return { result: { ok: false, error: 'not_found', message: `${group.name} has no scenes; the bridge turns lights on by recalling a scene. Create one first (e.g. save the current state as "Bright").` } };
+    return { action: { kind: 'scene', sceneId: pick.id } };
+  }
+  const s = resolveScene(q, home, group.kind === 'home' ? undefined : group.name);
+  if (!s.scene) return { result: s.result };
+  if (s.scene.groupId !== group.id) return { result: { ok: false, error: 'invalid_argument', message: `Scene "${s.scene.name}" belongs to ${s.scene.groupName}, not ${group.name}. Pick a scene of ${group.name}: ${roomScenes.map((x) => x.name).join(', ') || 'none'}.` } };
+  return { action: { kind: 'scene', sceneId: s.scene.id } };
+}
+
+async function setMotionAutomation(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const home = await ctx.getHome();
+  const { source, result } = resolveMotionSource(str(args.sensor), home);
+  if (!source) return result!;
+  const existing = home.motionAutomations.find((a) => a.sourceDeviceId === source.deviceId);
+  const enabledArg = bool(args.enabled);
+  const onlyEnable = enabledArg !== undefined && ['room', 'on_motion', 'off_after_minutes', 'on_no_motion', 'from', 'until', 'only_when_dark', 'do_not_disturb', 'slots'].every((k) => args[k] === undefined || args[k] === null || args[k] === '');
+  if (onlyEnable && existing) {
+    // The bridge answers "The instance doesn't support triggers" to an enabled-only PUT; send the rule back with it.
+    await ctx.client.updateBehaviorInstance(existing.id, { enabled: enabledArg, metadata: { name: existing.name }, configuration: existing.configuration });
+    return { ok: true, message: `${existing.sourceName}: motion automation ${enabledArg ? 'resumed' : 'paused'} (${existing.summary})`, id: existing.id };
+  }
+
+  // Where
+  let where = existing?.where.map((w) => ({ id: w.id, kind: w.kind })) ?? [];
+  if (str(args.room)) {
+    const g = resolveGroup(str(args.room), home);
+    if (!g.group) return g.result!;
+    if (g.group.kind === 'home') return { ok: false, error: 'invalid_argument', message: 'Pick a room or zone, not the whole home.' };
+    where = [{ id: g.group.id, kind: g.group.kind === 'zone' ? 'zone' : 'room' }];
+  }
+  if (!where.length) return { ok: false, error: 'invalid_argument', message: `Which room or zone should ${source.name} control? Pass room.` };
+  const group = home.groupById[where[0].id];
+  if (!group) return { ok: false, error: 'not_found', message: 'The room of this automation no longer exists; pass room.' };
+
+  // Slots
+  const defaultAfter = num(args.off_after_minutes) ?? existing?.slots[0]?.noMotionAfterMinutes ?? 5;
+  const slots: MotionSlot[] = [];
+  const dnd = bool(args.do_not_disturb) ?? existing?.slots.some((s) => s.doNotDisturb) ?? false;
+  const rawSlots = Array.isArray(args.slots) ? (args.slots as Record<string, unknown>[]) : null;
+  try {
+    if (rawSlots && rawSlots.length) {
+      for (const r of rawSlots) {
+        const onM = parseAction(r.on_motion, home, group, { kind: 'nothing' }, false);
+        if (!onM.action) return onM.result!;
+        const onN = parseAction(r.on_no_motion, home, group, { kind: 'off' }, true);
+        if (!onN.action) return onN.result!;
+        slots.push({ start: parseMotionTime(str(r.from)), onMotion: onM.action, noMotionAfterMinutes: num(r.off_after_minutes) ?? defaultAfter, onNoMotion: onN.action, doNotDisturb: dnd });
+      }
+    } else {
+      const onM = parseAction(args.on_motion, home, group, existing?.slots[0] ? fromView(existing.slots[0].onMotion) : { kind: 'nothing' }, false);
+      if (!onM.action) return onM.result!;
+      const onN = parseAction(args.on_no_motion, home, group, existing?.slots[0] ? fromView(existing.slots[0].onNoMotion) : { kind: 'off' }, true);
+      if (!onN.action) return onN.result!;
+      if (onM.action.kind === 'nothing' && onN.action.kind === 'nothing') return { ok: false, error: 'invalid_argument', message: 'Say what motion should do: a scene for on_motion and/or "off" for on_no_motion.' };
+      const from = str(args.from) ? parseMotionTime(str(args.from)) : { hour: 0, minute: 0 };
+      slots.push({ start: from, onMotion: onM.action, noMotionAfterMinutes: defaultAfter, onNoMotion: onN.action, doNotDisturb: dnd });
+      if (str(args.until)) slots.push({ start: parseMotionTime(str(args.until)), onMotion: { kind: 'nothing' }, noMotionAfterMinutes: defaultAfter, onNoMotion: { kind: 'nothing' }, doNotDisturb: dnd });
+    }
+  } catch (err) {
+    return { ok: false, error: 'invalid_argument', message: (err as Error).message };
+  }
+  const starts = new Set(slots.map((s) => `${s.start.hour}:${s.start.minute}`));
+  if (starts.size !== slots.length) return { ok: false, error: 'invalid_argument', message: 'from and until must be different times.' };
+
+  const onlyWhenDark = bool(args.only_when_dark) ?? existing?.onlyWhenDark ?? false;
+  const spec: MotionAutomationSpec = { sourceDeviceId: source.deviceId, motionServiceId: source.motionServiceId, motionType: source.motionType, where, onlyWhenDark, slots };
+  const name = str(args.name) || existing?.name || source.name;
+  const enabled = enabledArg ?? existing?.enabled ?? true;
+  let id: string;
+  if (existing) {
+    await ctx.client.updateBehaviorInstance(existing.id, buildBehaviorInstanceBody(spec, { name, enabled, existingLightLevel: onlyWhenDark ? existing.lightLevel : undefined, forUpdate: true }));
+    id = existing.id;
+  } else {
+    const refs = await ctx.client.createBehaviorInstance(buildBehaviorInstanceBody(spec, { name, enabled }));
+    id = refs[0]?.rid ?? '';
+  }
+  const sceneName = (sid: string) => home.sceneById[sid]?.name ?? 'scene';
+  const summary = describeMotionSlots(slots, sceneName, onlyWhenDark);
+  const rooms = where.map((w) => home.groupById[w.id]?.name ?? 'room').join(', ');
+  return {
+    ok: true,
+    message: `${source.name} → ${rooms}: ${summary}${enabled ? '' : ' (paused)'}`,
+    id,
+    automation: { sensor: source.name, rooms: where.map((w) => home.groupById[w.id]?.name), enabled, only_when_dark: onlyWhenDark, slots: slots.map((s) => ({ from: formatMotionTime(s.start), on_motion: s.onMotion.kind === 'scene' ? `scene "${sceneName(s.onMotion.sceneId)}"` : s.onMotion.kind, off_after_minutes: s.noMotionAfterMinutes, on_no_motion: s.onNoMotion.kind === 'scene' ? `scene "${sceneName(s.onNoMotion.sceneId)}"` : s.onNoMotion.kind })) },
+  };
+}
+
+function fromView(v: { kind: 'nothing' | 'off' | 'scene'; sceneId?: string }): MotionAction {
+  return v.kind === 'scene' && v.sceneId ? { kind: 'scene', sceneId: v.sceneId } : v.kind === 'off' ? { kind: 'off' } : { kind: 'nothing' };
 }
 
 export function buildSystemPrompt(home: HomeModel, extra?: string): string {
@@ -691,12 +954,14 @@ export function buildSystemPrompt(home: HomeModel, extra?: string): string {
     })
     .join('\n');
   const cameras = (home.cameras ?? []).map(describeCamera).join(', ');
+  const automations = (home.motionAutomations ?? []).map((a) => `- ${a.sourceName} → ${a.where.map((w) => w.name).join(', ')}: ${a.summary}${a.enabled ? '' : ' (paused)'}`).join('\n');
   return [
     'You are Hue Pilot, a friendly assistant that controls the Philips Hue lights in the user\'s home through tools.',
     'Always act with tools rather than describing what you would do. Prefer set_room for whole rooms and set_light for a single lamp.',
     'If a name is ambiguous or not found, ask a short clarifying question. Keep answers to one or two short sentences, confirm what you changed.',
     'Reply in the language the user writes in. Brightness is 1-100%. "Dim" means around 30%, "bright" means 100%.',
     'Never invent rooms, lights or scenes; use get_home_overview when unsure.',
+    'Motion sensors and cameras can drive the lights: set_motion_automation("<sensor>", room, on_motion scene, off_after_minutes, from/until, only_when_dark) writes the rule to the bridge; list_motion_automations shows the current rules; set_motion_sensing switches a sensor on or off.',
     cameras
       ? 'Hue Secure cameras: use get_sensor_readings for motion/battery/light level and set_camera_motion_detection to switch motion detection. The bridge exposes no video; live view is only in the Philips Hue app, or on a Nest Hub / Echo Show / Fire TV after linking Hue to Google Home or Alexa.'
       : '',
@@ -704,6 +969,7 @@ export function buildSystemPrompt(home: HomeModel, extra?: string): string {
     'Home layout:',
     rooms || '- (no rooms configured)',
     cameras ? `Cameras: ${cameras}` : '',
+    automations ? `Motion automations:\n${automations}` : '',
     extra ?? '',
   ]
     .filter((l) => l !== undefined)

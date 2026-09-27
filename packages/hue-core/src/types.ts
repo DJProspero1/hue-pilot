@@ -258,8 +258,22 @@ export interface GenericResource extends ResourceBase {
   [key: string]: unknown;
 }
 
+/** An automation on the bridge (an instance of a behavior_script), e.g. the Hue app's motion sensor rules. */
+export interface BehaviorInstanceResource extends ResourceBase {
+  type: 'behavior_instance';
+  script_id: string;
+  enabled: boolean;
+  configuration: Record<string, unknown>;
+  metadata?: { name?: string };
+  status?: 'initializing' | 'running' | 'disabled' | 'errored' | string;
+  last_error?: string;
+  state?: Record<string, unknown>;
+  dependees?: { target: ResourceRef; level: string; type?: string }[];
+}
+
 export type Resource =
   | LightResource
+  | BehaviorInstanceResource
   | GroupResource
   | BridgeHomeResource
   | GroupedLightResource

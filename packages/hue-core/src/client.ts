@@ -212,6 +212,24 @@ export class HueClient {
     return this.updateResource('camera_motion', cameraMotionId, { enabled });
   }
 
+  /** Motion sensing on/off for a motion sensor (`motion`) or a camera (`camera_motion`). */
+  setSensorEnabled(type: 'motion' | 'camera_motion', id: string, enabled: boolean): Promise<ResourceRef[]> {
+    return this.updateResource(type, id, { enabled });
+  }
+
+  // Automations (behavior_instance). The bridge upserts by source device on POST.
+  createBehaviorInstance(body: Record<string, unknown>): Promise<ResourceRef[]> {
+    return this.createResource('behavior_instance', { type: 'behavior_instance', ...body });
+  }
+
+  updateBehaviorInstance(id: string, body: Record<string, unknown>): Promise<ResourceRef[]> {
+    return this.updateResource('behavior_instance', id, body);
+  }
+
+  deleteBehaviorInstance(id: string): Promise<ResourceRef[]> {
+    return this.deleteResource('behavior_instance', id);
+  }
+
   // ---------------------------------------------------------------------------
   // API v1 (schedules, config, light search)
   // ---------------------------------------------------------------------------

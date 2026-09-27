@@ -297,6 +297,24 @@ class HueRepository(private val scope: CoroutineScope) {
     suspend fun setMotionEnabled(motionId: String, enabled: Boolean, type: String = "motion") =
         put(if (type == "camera_motion") "camera_motion" else "motion", motionId, buildJsonObject { put("enabled", enabled) }, 0)
 
+    // ---- motion automations (behavior_instance). The bridge upserts by source device on POST;
+    // its events do not always carry the configuration, so refresh after each write.
+    suspend fun createBehaviorInstance(body: JsonObject): String {
+        val refs = requireClient().post("behavior_instance", body)
+        refresh()
+        return refs.firstOrNull()?.get("rid")?.jsonPrimitive?.content ?: ""
+    }
+
+    suspend fun updateBehaviorInstance(id: String, body: JsonObject) {
+        requireClient().put("behavior_instance", id, body)
+        refresh()
+    }
+
+    suspend fun deleteBehaviorInstance(id: String) {
+        requireClient().delete("behavior_instance", id)
+        refresh()
+    }
+
     suspend fun renameDevice(deviceId: String, name: String) =
         put("device", deviceId, buildJsonObject { putJsonObject("metadata") { put("name", name.trim()) } }, 0)
 

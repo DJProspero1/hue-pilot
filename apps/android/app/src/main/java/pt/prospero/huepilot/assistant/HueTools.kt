@@ -24,6 +24,9 @@ import pt.prospero.huepilot.domain.NameMatcher
 import pt.prospero.huepilot.domain.ScheduleBuilder
 import pt.prospero.huepilot.domain.XY
 import kotlin.math.roundToInt
+import pt.prospero.huepilot.data.hue.AccessoryUi
+import pt.prospero.huepilot.data.hue.MotionAutomationUi
+import pt.prospero.huepilot.domain.MotionAutomations
 
 /**
  * The assistant tool contract shared with the desktop app and the MCP server.
@@ -85,6 +88,35 @@ class HueTools(private val repo: HueRepository) {
                 "scene" to str("Scene name to activate (rooms/zones only)."),
             ), listOf("time", "target")))
         add(decl("delete_schedule", "Delete a schedule by id.", mapOf("id" to str("Schedule id from list_schedules.")), listOf("id")))
+        add(decl("list_motion_automations", "List what each motion sensor and Hue Secure camera makes the lights do on motion (the bridge-side automations, one per sensor): which room, which scene on motion, what happens after no motion, time slots, and whether it only works when dark.", emptyMap(), emptyList()))
+        add(decl("set_motion_automation", "Create or replace the automation of a motion sensor or camera (runs on the bridge, app closed or not). Simple form: on_motion (a scene of that room, e.g. \"Bright\", or \"nothing\"), off_after_minutes, optional from/until clock window (outside it the sensor does nothing), only_when_dark. For different day/night behaviour pass slots instead. To only pause/resume an existing automation pass just sensor and enabled. When the user does not say, ask whether it should work only when dark.",
+            mapOf(
+                "sensor" to str("Motion sensor or camera name."),
+                "room" to str("Room or zone whose lights it controls. Defaults to the existing automation's room."),
+                "on_motion" to str("Scene name to activate when motion starts (must belong to the room), \"on\" for the room's brightest scene, or \"nothing\"."),
+                "off_after_minutes" to num("Minutes without motion before on_no_motion happens (default 5)."),
+                "on_no_motion" to str("\"off\" (default), \"nothing\", or a scene name."),
+                "from" to str("Start of the active window, HH:MM. Omit for all day."),
+                "until" to str("End of the active window, HH:MM."),
+                "only_when_dark" to bool("true = only between sunset and sunrise; false = any time of day."),
+                "do_not_disturb" to bool("true = leave the lights alone when someone changed them by hand."),
+                "enabled" to bool("false pauses the automation, true resumes it."),
+                "name" to str("Optional name; defaults to the sensor name."),
+                "slots" to buildJsonObject {
+                    put("type", "array")
+                    put("description", "Advanced: time slots, each active from its \"from\" until the next slot. Replaces on_motion/off_after_minutes/on_no_motion/from/until.")
+                    putJsonObject("items") {
+                        put("type", "object")
+                        putJsonObject("properties") {
+                            put("from", str("HH:MM")); put("on_motion", str("Scene name, \"on\" or \"nothing\".")); put("off_after_minutes", num("Minutes.")); put("on_no_motion", str("\"off\", \"nothing\" or a scene name."))
+                        }
+                        putJsonArray("required") { add(JsonPrimitive("from")) }
+                    }
+                },
+            ), listOf("sensor")))
+        add(decl("delete_motion_automation", "Remove the motion automation of a sensor or camera, so motion no longer changes any light.", mapOf("sensor" to str("Motion sensor or camera name (or the automation id from list_motion_automations).")), listOf("sensor")))
+        add(decl("set_motion_sensing", "Switch motion sensing itself on or off for a motion sensor or a Hue Secure camera (off = it stops reporting motion; its automation then never fires).",
+            mapOf("sensor" to str("Motion sensor or camera name."), "enabled" to bool("true = sensing on, false = off.")), listOf("sensor", "enabled")))
     }
 
     /** Gemini-style `functionDeclarations` view of [specs] (also the neutral JSON shape). */
@@ -125,6 +157,10 @@ class HueTools(private val repo: HueRepository) {
             "list_schedules" -> listSchedules()
             "create_schedule" -> createSchedule(args)
             "delete_schedule" -> deleteSchedule(args)
+            "list_motion_automations" -> listMotionAutomations()
+            "set_motion_automation" -> setMotionAutomation(args)
+            "delete_motion_automation" -> deleteMotionAutomation(args)
+            "set_motion_sensing" -> setMotionSensing(args)
             else -> err("unknown_tool", "Unknown tool: $name")
         }
     } catch (e: HueException) {
@@ -149,6 +185,7 @@ class HueTools(private val repo: HueRepository) {
                 "get_sensor_readings" -> "Read sensors and cameras"
                 "set_camera_motion_detection" -> "Camera motion detection updated"
                 "list_schedules" -> "Listed schedules"
+                "list_motion_automations" -> "Listed motion automations"
                 else -> name.replace('_', ' ')
             }
         }
@@ -495,6 +532,184 @@ class HueTools(private val repo: HueRepository) {
         return ok("Schedule $id deleted", buildJsonObject { put("id", id) })
     }
 
+    // ------------------------------------------------------------------ motion automations
+
+    private fun motionSources(): List<AccessoryUi> = snap.accessories.filter { it.motionId != null && !it.isBridge }
+
+    /** Words that name the kind of device rather than the device: ignored when matching a sensor or camera. */
+    private val genericSourceWords = setOf("sensor", "sensors", "camera", "cameras", "cam", "motion", "detector", "hue", "secure", "camara", "sensores", "movimento")
+
+    /**
+     * Sensors and cameras are matched more strictly than rooms: one shared word ("garage sensor" vs
+     * "Office motion sensor") is not a match, because the caller may be about to delete a rule.
+     */
+    private fun resolveMotionSource(q: String): MatchResult<AccessoryUi> {
+        val sources = motionSources()
+        fun norm(s: String) = s.trim().lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
+        fun strong(query: String, item: AccessoryUi): Boolean {
+            val n = norm(item.name)
+            val qq = norm(query)
+            if (qq.isEmpty()) return false
+            if (n == qq || n.startsWith(qq) || n.contains(qq) || item.deviceId == query.trim()) return true
+            val qw = qq.split(" ").filter { it.isNotBlank() }
+            val nw = n.split(" ").filter { it.isNotBlank() }
+            return qw.isNotEmpty() && qw.all { it in nw }
+        }
+        fun attempt(query: String): MatchResult<AccessoryUi>? {
+            if (query.isBlank()) return null
+            return when (val r = NameMatcher.match(query, sources, { it.name }, { it.deviceId })) {
+                is MatchResult.Found -> if (strong(query, r.item)) r else null
+                is MatchResult.Ambiguous -> if (r.candidates.all { strong(query, it) }) r else null
+                is MatchResult.NotFound -> null
+            }
+        }
+        val stripped = norm(q).split(" ").filter { it.isNotBlank() && it !in genericSourceWords }.joinToString(" ")
+        return attempt(stripped) ?: attempt(q) ?: MatchResult.NotFound(sources)
+    }
+
+    private fun JsonObject.present(key: String): Boolean = when (val v = this[key]) {
+        null, is JsonNull -> false
+        is JsonPrimitive -> v.content.isNotBlank() && v.content != "null"
+        is JsonArray -> v.isNotEmpty()
+        else -> true
+    }
+
+    private fun actLabel(kind: String, sceneId: String?): String = if (kind == "scene") "scene \"${sceneId?.let { snap.scene(it)?.name } ?: "scene"}\"" else kind
+
+    private fun automationJson(a: MotionAutomationUi): JsonObject = buildJsonObject {
+        put("id", a.id); put("name", a.name); put("sensor", a.sourceName); put("kind", a.sourceKind); put("enabled", a.enabled); put("status", JsonPrimitive(a.status))
+        put("rooms", namesArray(a.whereNames)); put("only_when_dark", a.onlyWhenDark)
+        put("slots", buildJsonArray {
+            for (s in a.slots) add(buildJsonObject {
+                put("from", s.start); put("on_motion", actLabel(s.onMotion, s.onMotionSceneId)); put("off_after_minutes", s.noMotionAfterMinutes)
+                put("on_no_motion", actLabel(s.onNoMotion, s.onNoMotionSceneId)); put("do_not_disturb", s.doNotDisturb)
+            })
+        })
+        put("summary", a.summary)
+    }
+
+    private fun listMotionAutomations(): JsonObject = buildJsonObject {
+        put("ok", true)
+        put("automations", buildJsonArray { for (a in snap.motionAutomations) add(automationJson(a)) })
+        put("sensors_without_automation", namesArray(motionSources().filter { src -> snap.motionAutomations.none { it.sourceDeviceId == src.deviceId } }.map { it.name }))
+    }
+
+    private fun parseAction(raw: String?, group: GroupUi, fallback: MotionAutomations.Action, allowOff: Boolean): Pair<MotionAutomations.Action?, JsonObject?> {
+        val q = raw?.trim().orEmpty()
+        if (q.isEmpty()) return fallback to null
+        val lc = q.lowercase()
+        if (lc in setOf("nothing", "none", "no", "do nothing", "keep", "leave", "nada")) return MotionAutomations.Action.Nothing to null
+        if (allowOff && lc in setOf("off", "all off", "turn off", "lights off", "desligar", "apagar")) return MotionAutomations.Action.Off to null
+        val roomScenes = snap.scenesFor(group.id)
+        if (lc in setOf("on", "true", "turn on", "lights on", "bright", "ligar", "acender")) {
+            val preferred = listOf("bright", "concentrate", "energize", "read", "normal", "relax")
+            val pick = preferred.firstNotNullOfOrNull { p -> roomScenes.firstOrNull { it.name.equals(p, ignoreCase = true) } } ?: roomScenes.firstOrNull()
+                ?: return null to err("not_found", "${group.name} has no scenes; the bridge turns lights on by recalling a scene. Create one first (e.g. save the current state as \"Bright\").")
+            return MotionAutomations.Action.Scene(pick.id) to null
+        }
+        val res = matchScene(q, group.name)
+        val scene = (res as? MatchResult.Found)?.item ?: return null to matchFail(res, "scene", q) { "${it.name} (${it.groupName})" }
+        if (scene.groupId != group.id) return null to err("invalid_argument", "Scene \"${scene.name}\" belongs to ${scene.groupName}, not ${group.name}. Pick a scene of ${group.name}: ${roomScenes.joinToString(", ") { it.name }.ifEmpty { "none" }}.")
+        return MotionAutomations.Action.Scene(scene.id) to null
+    }
+
+    private fun fromUi(kind: String, sceneId: String?): MotionAutomations.Action = when {
+        kind == "scene" && sceneId != null -> MotionAutomations.Action.Scene(sceneId)
+        kind == "off" -> MotionAutomations.Action.Off
+        else -> MotionAutomations.Action.Nothing
+    }
+
+    private suspend fun setMotionAutomation(args: JsonObject): JsonObject {
+        val q = args.str("sensor") ?: throw IllegalArgumentException("sensor is required")
+        val res = resolveMotionSource(q)
+        val source = (res as? MatchResult.Found)?.item ?: return matchFail(res, "motion sensor or camera", q) { "${it.name} (${it.kind})" }
+        val motionId = source.motionId ?: return err("unsupported", "${source.name} has no motion service")
+        val existing = snap.motionAutomations.firstOrNull { it.sourceDeviceId == source.deviceId }
+        val enabledArg = args.bool("enabled")
+        val onlyEnable = enabledArg != null && listOf("room", "on_motion", "off_after_minutes", "on_no_motion", "from", "until", "only_when_dark", "do_not_disturb", "slots").none { args.present(it) }
+        if (onlyEnable && existing != null) {
+            // The bridge refuses an enabled-only PUT ("The instance doesn't support triggers"): send the rule back with it.
+            repo.updateBehaviorInstance(existing.id, buildJsonObject { put("enabled", enabledArg); putJsonObject("metadata") { put("name", existing.name) }; put("configuration", existing.configuration) })
+            return ok("${existing.sourceName}: motion automation ${if (enabledArg) "resumed" else "paused"} (${existing.summary})", buildJsonObject { put("id", existing.id) })
+        }
+
+        var where: List<Pair<String, String>> = existing?.let { it.whereIds.zip(it.whereKinds) } ?: emptyList()
+        args.str("room")?.let { roomQ ->
+            val g = matchGroup(roomQ)
+            val group = (g as? MatchResult.Found)?.item ?: return matchFail(g, "room", roomQ) { it.name }
+            where = listOf(group.id to group.kind.rtype)
+        }
+        if (where.isEmpty()) return err("invalid_argument", "Which room or zone should ${source.name} control? Pass room.")
+        val group = snap.group(where[0].first) ?: return err("not_found", "The room of this automation no longer exists; pass room.")
+
+        val defaultAfter = args.num("off_after_minutes")?.roundToInt() ?: existing?.slots?.firstOrNull()?.noMotionAfterMinutes ?: 5
+        val dnd = args.bool("do_not_disturb") ?: existing?.slots?.any { it.doNotDisturb } ?: false
+        val slots = ArrayList<MotionAutomations.Slot>()
+        val rawSlots = args["slots"] as? JsonArray
+        try {
+            if (rawSlots != null && rawSlots.isNotEmpty()) {
+                for (r in rawSlots) {
+                    val o = r as? JsonObject ?: continue
+                    val (onM, e1) = parseAction(o.str("on_motion"), group, MotionAutomations.Action.Nothing, false)
+                    if (onM == null) return e1!!
+                    val (onN, e2) = parseAction(o.str("on_no_motion"), group, MotionAutomations.Action.Off, true)
+                    if (onN == null) return e2!!
+                    slots.add(MotionAutomations.Slot(MotionAutomations.parseTime(o.str("from")), onM, o.num("off_after_minutes")?.roundToInt() ?: defaultAfter, onN, dnd))
+                }
+            } else {
+                val first = existing?.slots?.firstOrNull()
+                val (onM, e1) = parseAction(args.str("on_motion"), group, first?.let { fromUi(it.onMotion, it.onMotionSceneId) } ?: MotionAutomations.Action.Nothing, false)
+                if (onM == null) return e1!!
+                val (onN, e2) = parseAction(args.str("on_no_motion"), group, first?.let { fromUi(it.onNoMotion, it.onNoMotionSceneId) } ?: MotionAutomations.Action.Off, true)
+                if (onN == null) return e2!!
+                if (onM is MotionAutomations.Action.Nothing && onN is MotionAutomations.Action.Nothing) return err("invalid_argument", "Say what motion should do: a scene for on_motion and/or \"off\" for on_no_motion.")
+                val from = args.str("from")?.let { MotionAutomations.parseTime(it) } ?: MotionAutomations.Time(0, 0)
+                slots.add(MotionAutomations.Slot(from, onM, defaultAfter, onN, dnd))
+                args.str("until")?.let { slots.add(MotionAutomations.Slot(MotionAutomations.parseTime(it), MotionAutomations.Action.Nothing, defaultAfter, MotionAutomations.Action.Nothing, dnd)) }
+            }
+        } catch (e: IllegalArgumentException) {
+            return err("invalid_argument", e.message ?: "invalid time")
+        }
+        if (slots.map { it.start.minutes }.toSet().size != slots.size) return err("invalid_argument", "from and until must be different times.")
+
+        val onlyWhenDark = args.bool("only_when_dark") ?: existing?.onlyWhenDark ?: false
+        val motionType = source.motionType ?: if (source.isCamera) "camera_motion" else "motion"
+        val spec = MotionAutomations.Spec(source.deviceId, motionId, motionType, where, onlyWhenDark, slots)
+        val name = args.str("name") ?: existing?.name ?: source.name
+        val enabled = enabledArg ?: existing?.enabled ?: true
+        val id = if (existing != null) {
+            repo.updateBehaviorInstance(existing.id, MotionAutomations.instanceBody(spec, name, enabled, if (onlyWhenDark) existing.lightLevel else null, forUpdate = true))
+            existing.id
+        } else repo.createBehaviorInstance(MotionAutomations.instanceBody(spec, name, enabled))
+        val summary = MotionAutomations.describe(slots, onlyWhenDark) { sid -> snap.scene(sid)?.name ?: "scene" }
+        val roomNames = where.map { snap.group(it.first)?.name ?: "room" }
+        return ok("${source.name} → ${roomNames.joinToString(", ")}: $summary${if (enabled) "" else " (paused)"}", buildJsonObject {
+            put("id", id); put("sensor", source.name); put("rooms", namesArray(roomNames)); put("enabled", enabled); put("only_when_dark", onlyWhenDark); put("summary", summary)
+        })
+    }
+
+    private suspend fun deleteMotionAutomation(args: JsonObject): JsonObject {
+        val q = args.str("sensor") ?: args.str("id") ?: throw IllegalArgumentException("sensor is required")
+        var auto = snap.motionAutomations.firstOrNull { it.id == q }
+        if (auto == null) {
+            val res = resolveMotionSource(q)
+            val source = (res as? MatchResult.Found)?.item ?: return matchFail(res, "motion sensor or camera", q) { "${it.name} (${it.kind})" }
+            auto = snap.motionAutomations.firstOrNull { it.sourceDeviceId == source.deviceId } ?: return err("not_found", "${source.name} has no motion automation.")
+        }
+        repo.deleteBehaviorInstance(auto.id)
+        return ok("Removed the motion automation of ${auto.sourceName}; motion no longer changes the lights.", buildJsonObject { put("id", auto.id) })
+    }
+
+    private suspend fun setMotionSensing(args: JsonObject): JsonObject {
+        val q = args.str("sensor") ?: throw IllegalArgumentException("sensor is required")
+        val enabled = args.bool("enabled") ?: throw IllegalArgumentException("enabled is required")
+        val res = resolveMotionSource(q)
+        val source = (res as? MatchResult.Found)?.item ?: return matchFail(res, "motion sensor or camera", q) { "${it.name} (${it.kind})" }
+        val motionId = source.motionId ?: return err("unsupported", "${source.name} has no motion service")
+        repo.setMotionEnabled(motionId, enabled, source.motionType ?: if (source.isCamera) "camera_motion" else "motion")
+        return ok("${source.name}: motion sensing ${if (enabled) "on" else "off"}", buildJsonObject { put("sensor", source.name); put("kind", source.kind); put("enabled", enabled) })
+    }
+
     // ------------------------------------------------------------------ system prompt
 
     /** Describes the home for the system instruction. */
@@ -512,6 +727,11 @@ class HueTools(private val repo: HueRepository) {
         if (s.lightsWithoutRoom.isNotEmpty()) sb.append("- lights without room: ").append(s.lightsWithoutRoom.joinToString(", ") { it.name }).append('\n')
         val sensors = s.accessories.filter { !it.isBridge && !it.isCamera }
         if (sensors.isNotEmpty()) sb.append("- accessories: ").append(sensors.joinToString(", ") { "${it.name} (${it.kind})" }).append('\n')
+        if (s.motionAutomations.isNotEmpty()) {
+            sb.append("- motion automations (bridge rules; change them with set_motion_automation): ")
+                .append(s.motionAutomations.joinToString("; ") { a -> "${a.sourceName} → ${a.whereNames.joinToString(", ")}: ${a.summary}${if (a.enabled) "" else " (paused)"}" })
+                .append('\n')
+        }
         if (s.cameras.isNotEmpty()) {
             sb.append("- cameras (Hue Secure; motion/light/battery only, no video through the bridge): ")
                 .append(s.cameras.joinToString(", ") { c -> "${c.name} (${if (c.motion == true) "motion detected" else "clear"}${if (c.motionEnabled == false) ", detection paused" else ""}${c.batteryLevel?.let { ", battery $it%" } ?: ""})" })

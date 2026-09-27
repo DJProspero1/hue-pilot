@@ -57,7 +57,7 @@ class OpenAiCompatibleAdapterTest {
         assertThat(b1.containsKey("temperature")).isFalse()
         assertThat(b1["tool_choice"]!!.jsonPrimitive.content).isEqualTo("auto")
         val tools1 = b1["tools"]!!.jsonArray
-        assertThat(tools1).hasSize(12)
+        assertThat(tools1).hasSize(16)
         assertThat(tools1[0].jsonObject["type"]!!.jsonPrimitive.content).isEqualTo("function")
         val fn0 = tools1[0].jsonObject["function"]!!.jsonObject
         assertThat(fn0["name"]!!.jsonPrimitive.content).isEqualTo("get_home_overview")

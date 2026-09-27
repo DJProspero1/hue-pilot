@@ -7,6 +7,8 @@ import pt.prospero.huepilot.domain.Gamut
 import pt.prospero.huepilot.domain.XY
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import pt.prospero.huepilot.domain.MotionAutomations
+import kotlinx.serialization.json.JsonPrimitive
 
 enum class GroupKind(val rtype: String) { ROOM("room"), ZONE("zone") }
 
@@ -138,6 +140,33 @@ data class AccessoryUi(
 
 data class BridgeUi(val id: String, val bridgeId: String?, val timeZone: String?, val name: String?, val modelId: String?, val softwareVersion: String?)
 
+/** One time slot of a motion automation; kinds are "nothing", "off" or "scene". */
+data class MotionSlotUi(val start: String, val onMotion: String, val onMotionSceneId: String?, val noMotionAfterMinutes: Int, val onNoMotion: String, val onNoMotionSceneId: String?, val doNotDisturb: Boolean)
+
+/** What a motion sensor or camera makes the lights do: a bridge behavior_instance of the Hue Accessories script. */
+data class MotionAutomationUi(
+    val id: String,
+    val name: String,
+    val enabled: Boolean,
+    val status: String?,
+    val sourceDeviceId: String,
+    val sourceName: String,
+    /** "sensor" or "camera". */
+    val sourceKind: String,
+    val motionServiceId: String,
+    val motionType: String,
+    val whereIds: List<String>,
+    val whereKinds: List<String>,
+    val whereNames: List<String>,
+    val onlyWhenDark: Boolean,
+    /** The bridge's darkness condition as stored (kept when updating). */
+    val lightLevel: JsonObject?,
+    /** The bridge configuration verbatim: an enabled-only PUT is refused unless it is sent back too. */
+    val configuration: JsonObject,
+    val slots: List<MotionSlotUi>,
+    val summary: String,
+)
+
 data class HomeSnapshot(
     val lights: List<LightUi> = emptyList(),
     val rooms: List<GroupUi> = emptyList(),
@@ -147,6 +176,7 @@ data class HomeSnapshot(
     val bridgeHomeGroupedLightId: String? = null,
     val allOn: Boolean = false,
     val bridge: BridgeUi? = null,
+    val motionAutomations: List<MotionAutomationUi> = emptyList(),
     val resourceCount: Int = 0,
 ) {
     val groups: List<GroupUi> get() = rooms + zones
@@ -187,6 +217,7 @@ object SnapshotBuilder {
         val zigbee = LinkedHashMap<String, ZigbeeConnectivity>()
         var bridgeHome: Group? = null
         var bridge: Bridge? = null
+        val behaviors = ArrayList<JsonObject>()
 
         for ((id, obj) in resources) {
             when (typeOf(obj)) {
@@ -198,6 +229,7 @@ object SnapshotBuilder {
                 "device" -> decode(obj, Device.serializer())?.let { devices[id] = it }
                 "motion", "camera_motion" -> decode(obj, Motion.serializer())?.let { motions[id] = it; motionTypes[id] = typeOf(obj) ?: "motion" }
                 "light_level" -> decode(obj, LightLevel.serializer())?.let { lightLevels[id] = it }
+                "behavior_instance" -> if (MotionAutomations.isMotionAutomation(obj)) behaviors.add(obj)
                 "temperature" -> decode(obj, Temperature.serializer())?.let { temperatures[id] = it }
                 "device_power" -> decode(obj, DevicePower.serializer())?.let { powers[id] = it }
                 "button" -> decode(obj, Button.serializer())?.let { buttons[id] = it }
@@ -408,6 +440,36 @@ object SnapshotBuilder {
             )
         }
 
+        val automationGroupNames = (roomUis + zoneUis).associate { it.id to it.name }
+        val sceneNames = sceneUis.associate { it.id to it.name }
+        val cameraIds = accessories.filter { it.isCamera }.map { it.deviceId }.toSet()
+        val motionAutomations = behaviors.mapNotNull { b ->
+            val spec = MotionAutomations.parseConfiguration(b["configuration"] as? JsonObject) ?: return@mapNotNull null
+            val id = b["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val device = devices[spec.sourceDeviceId]
+            fun kind(a: MotionAutomations.Action) = when (a) { is MotionAutomations.Action.Scene -> "scene"; MotionAutomations.Action.Off -> "off"; MotionAutomations.Action.Nothing -> "nothing" }
+            fun sceneId(a: MotionAutomations.Action) = (a as? MotionAutomations.Action.Scene)?.sceneId
+            MotionAutomationUi(
+                id = id,
+                name = (b["metadata"] as? JsonObject)?.get("name")?.jsonPrimitive?.content?.trim()?.ifEmpty { null } ?: device?.metadata?.name ?: "Motion automation",
+                enabled = b["enabled"]?.jsonPrimitive?.content != "false",
+                status = (b["status"] as? JsonPrimitive)?.content,
+                sourceDeviceId = spec.sourceDeviceId,
+                sourceName = device?.metadata?.name ?: device?.productData?.productName ?: "Sensor",
+                sourceKind = if (spec.motionType == "camera_motion" || spec.sourceDeviceId in cameraIds) "camera" else "sensor",
+                motionServiceId = spec.motionServiceId,
+                motionType = spec.motionType,
+                whereIds = spec.where.map { it.first },
+                whereKinds = spec.where.map { it.second },
+                whereNames = spec.where.map { automationGroupNames[it.first] ?: "room" },
+                onlyWhenDark = spec.onlyWhenDark,
+                lightLevel = (b["configuration"] as? JsonObject)?.get("light_level") as? JsonObject,
+                configuration = (b["configuration"] as? JsonObject) ?: JsonObject(emptyMap()),
+                slots = spec.slots.sortedBy { it.start.minutes }.map { sl -> MotionSlotUi(sl.start.toString(), kind(sl.onMotion), sceneId(sl.onMotion), sl.noMotionAfterMinutes, kind(sl.onNoMotion), sceneId(sl.onNoMotion), sl.doNotDisturb) },
+                summary = MotionAutomations.describe(spec.slots, spec.onlyWhenDark) { sceneNames[it] ?: "scene" },
+            )
+        }.sortedBy { it.sourceName.lowercase() }
+
         val sortedLights = lightUis.values.sortedWith(compareBy({ it.roomName?.lowercase() ?: "￿" }, { it.name.lowercase() }))
         return HomeSnapshot(
             lights = sortedLights,
@@ -418,6 +480,7 @@ object SnapshotBuilder {
             bridgeHomeGroupedLightId = bridgeHomeGl,
             allOn = bridgeHomeGl?.let { groupedLights[it]?.on?.on } ?: sortedLights.any { it.on },
             bridge = bridgeUi,
+            motionAutomations = motionAutomations,
             resourceCount = resources.size,
         )
     }

@@ -1,5 +1,5 @@
 import { WEEKDAYS, type Weekday } from '@hue/core';
-import { CalendarClock, Plus, Trash2 } from 'lucide-react';
+import { CalendarClock, Cctv, Plus, Radar, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useApp } from '../store';
 import type { ScheduleSpec, ScheduleView } from '../../../shared/ipc-types.ts';
@@ -10,6 +10,7 @@ const DAY_LABEL: Record<Weekday, string> = { mon: 'Mon', tue: 'Tue', wed: 'Wed',
 /** Bridge schedules: a compact list with a "+" to add one. */
 export default function Automations() {
   const home = useApp((s) => s.home);
+  const motion = useApp((s) => s.home.motionAutomations);
   const connected = useApp((s) => s.status.state === 'connected' || s.home.updatedAt > 0);
   const toast = useApp((s) => s.toast);
   const [items, setItems] = useState<ScheduleView[] | null>(null);
@@ -105,9 +106,24 @@ export default function Automations() {
           <Plus size={15} />
         </IconButton>
       </div>
+      <div className="space-y-1.5 mb-1.5">
+        {motion.map((a) => (
+          <div key={a.id} className={cx('group surface rounded-xl px-3 py-2 flex items-center gap-2.5', !a.enabled && 'opacity-60')} title={a.lastError ?? a.summary}>
+            {a.sourceKind === 'camera' ? <Cctv size={15} className="text-accent shrink-0" /> : <Radar size={15} className="text-accent shrink-0" />}
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium truncate">{a.sourceName} → {a.where.map((w) => w.name).join(', ')}</div>
+              <div className="text-[11px] text-muted truncate">{a.summary}</div>
+            </div>
+            <button onClick={() => window.hue.deleteMotionAutomation(a.id).catch((e) => toast(e.message, 'error'))} title="Delete" className="text-muted opacity-0 group-hover:opacity-100 hover:text-rose-400 transition-opacity">
+              <Trash2 size={14} />
+            </button>
+            <Toggle checked={a.enabled} onChange={(v) => window.hue.setMotionAutomationEnabled(a.id, v).catch((e) => toast(e.message, 'error'))} size="sm" />
+          </div>
+        ))}
+      </div>
       {items === null && <div className="flex justify-center py-4"><Spinner /></div>}
       {error && <div className="text-xs text-rose-400 px-1">{error}</div>}
-      {items && !items.length && !error && <div className="text-xs text-muted px-1">None yet.</div>}
+      {items && !items.length && !error && !motion.length && <div className="text-xs text-muted px-1">None yet. Ask the assistant, e.g. "when the hallway sensor sees motion at night, turn on Nightlight".</div>}
       <div className="space-y-1.5">
         {items?.map((s) => (
           <div key={s.id} className={cx('group surface rounded-xl px-3 py-2 flex items-center gap-2.5', s.status !== 'enabled' && 'opacity-60')}>

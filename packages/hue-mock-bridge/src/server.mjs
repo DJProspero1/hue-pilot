@@ -260,6 +260,37 @@ export function createSeed() {
   const cam2 = mkCamera({ name: 'Driveway camera', model: 'CMW002', product: 'Secure floodlight camera', battery: null, motion: true, lux: 4000 });
   const floodlight = mkLight({ name: 'Driveway floodlight', archetype: 'hue_floodlight_camera', product: 'Secure floodlight camera', model: '442296118491', on: false, bri: 100, mirek: 300 });
   mkGroup('room', { name: 'Driveway', archetype: 'driveway', children: dev([floodlight]) });
+
+  // Automations: the "Hue Accessories" behavior script and one motion-sensor rule (office), as the Hue app creates them.
+  const ACCESSORY_SCRIPT = '67d9395b-4403-42cc-b5f0-740b699d67c6';
+  put({ id: ACCESSORY_SCRIPT, type: 'behavior_script', description: 'Motion sensors and Hue Secure cameras', configuration_schema: { $ref: 'config.json#' }, trigger_schema: { $ref: 'trigger.json#' }, state_schema: { $ref: 'state.json#' }, version: '0.0.1', metadata: { name: 'Hue Accessories', category: 'accessory' }, supported_features: [] });
+  const officeRoom = [...res.values()].find((r) => r.type === 'room' && r.metadata?.name === 'Office') ?? [...res.values()].find((r) => r.type === 'room');
+  const focusScene = [...res.values()].find((r) => r.type === 'scene' && r.metadata?.name === 'Focus') ?? [...res.values()].find((r) => r.type === 'scene');
+  put({
+    id: randomUUID(),
+    type: 'behavior_instance',
+    script_id: ACCESSORY_SCRIPT,
+    enabled: true,
+    status: 'running',
+    last_error: '',
+    state: { source_type: 'device', model_id: 'SML001' },
+    dependees: [],
+    metadata: { name: 'Office motion sensor' },
+    configuration: {
+      source: { rid: motionDev, rtype: 'device' },
+      light_level: { daylight: { sunrise_sunset: { sunrise_offset: { hours: -2 }, sunset_offset: { hours: 2 } } } },
+      motion: {
+        motion_service: { rid: motionSvc, rtype: 'motion' },
+        where: [{ group: { rid: officeRoom.id, rtype: 'room' } }],
+        when: {
+          timeslots: [
+            { start_time: { type: 'time', time: { hour: 7, minute: 0 } }, do_not_disturb: true, on_motion: { recall_single: [{ action: 'do_nothing' }] }, on_no_motion: { after: { minutes: 10 }, recall_single: [{ action: 'all_off' }] } },
+            { start_time: { type: 'time', time: { hour: 22, minute: 0 } }, on_motion: { recall_single: [{ action: { recall: { rid: focusScene.id, rtype: 'scene' } } }] }, on_no_motion: { after: { minutes: 5 }, recall_single: [{ action: 'all_off' }] } },
+          ],
+        },
+      },
+    },
+  });
   res.get(homeId).children.push({ rid: cam1, rtype: 'device' }, { rid: cam2, rtype: 'device' }, { rid: floodlight.deviceId, rtype: 'device' });
 
   return res;
@@ -594,6 +625,17 @@ export function createMockBridge({ port = 8080, host = '0.0.0.0', log = true, si
           emit('update', [{ id, type, owner: r.owner, enabled: r.enabled, ...(r.sensitivity ? { sensitivity: r.sensitivity } : {}) }]);
           return json(res, 200, { errors: [], data: [{ rid: id, rtype: type }] });
         }
+        if (type === 'behavior_instance') {
+          // Like the real bridge: script_id may not be sent on PUT, and a PUT that carries `enabled` without the configuration is refused.
+          if (body.script_id !== undefined) return json(res, 200, { errors: [{ description: 'property: script_id  not allowed' }], data: [{ rid: id, rtype: type }] });
+          if (typeof body.enabled === 'boolean' && !body.configuration) return json(res, 200, { errors: [{ description: "The instance doesn't support triggers." }], data: [{ rid: id, rtype: type }] });
+          if (typeof body.enabled === 'boolean') r.enabled = body.enabled;
+          if (body.metadata) r.metadata = { ...r.metadata, ...body.metadata };
+          if (body.configuration) r.configuration = body.configuration;
+          r.status = r.enabled ? 'running' : 'disabled';
+          emit('update', [{ id, type, enabled: r.enabled, status: r.status, metadata: r.metadata, configuration: r.configuration }]);
+          return json(res, 200, { errors: [], data: [{ rid: id, rtype: type }] });
+        }
         if (body.metadata) {
           r.metadata = { ...r.metadata, ...body.metadata };
           emit('update', [{ id, id_v1: r.id_v1, type, metadata: r.metadata }]);
@@ -634,6 +676,23 @@ export function createMockBridge({ port = 8080, host = '0.0.0.0', log = true, si
           resources.set(glId, gl);
           emit('add', [g, gl]);
           refreshGroupedLight(g);
+          return json(res, 200, { errors: [], data: [{ rid: newId, rtype: type }] });
+        }
+        if (type === 'behavior_instance') {
+          const srcRid = body.configuration?.source?.rid;
+          const existing = [...resources.values()].find((r) => r.type === 'behavior_instance' && r.script_id === body.script_id && srcRid && r.configuration?.source?.rid === srcRid);
+          if (existing) {
+            if (typeof body.enabled === 'boolean') existing.enabled = body.enabled;
+            if (body.metadata) existing.metadata = { ...existing.metadata, ...body.metadata };
+            if (body.configuration) existing.configuration = body.configuration;
+            existing.status = existing.enabled ? 'running' : 'disabled';
+            emit('update', [{ id: existing.id, type, enabled: existing.enabled, status: existing.status, metadata: existing.metadata, configuration: existing.configuration }]);
+            return json(res, 200, { errors: [], data: [{ rid: existing.id, rtype: type }] });
+          }
+          const newId = randomUUID();
+          const inst = { id: newId, type, script_id: body.script_id, enabled: body.enabled !== false, status: body.enabled === false ? 'disabled' : 'running', last_error: '', state: {}, dependees: [], metadata: body.metadata ?? { name: 'Automation' }, configuration: body.configuration ?? {} };
+          resources.set(newId, inst);
+          emit('add', [inst]);
           return json(res, 200, { errors: [], data: [{ rid: newId, rtype: type }] });
         }
         return json(res, 405, { errors: [{ description: `cannot create ${type}` }], data: [] });

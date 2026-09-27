@@ -249,3 +249,51 @@ test('model: event merging', () => {
   assert.equal(map.has(light.id), false);
   assert.deepEqual(mergeResource({ a: { b: 1, c: 2 }, arr: [1] }, { a: { b: 5 }, arr: [2, 3] }), { a: { b: 5, c: 2 }, arr: [2, 3] });
 });
+
+test('automations: configuration round trip, time parsing and summary', async () => {
+  const { buildAccessoryConfiguration, parseAccessoryConfiguration, parseMotionTime, formatMotionTime, describeMotionSlots } = await import('../src/automations.ts');
+  const spec = {
+    sourceDeviceId: 'dev',
+    motionServiceId: 'svc',
+    motionType: 'motion',
+    where: [{ id: 'room1', kind: 'room' }],
+    onlyWhenDark: true,
+    slots: [
+      { start: { hour: 22, minute: 0 }, onMotion: { kind: 'scene', sceneId: 'sc1' }, noMotionAfterMinutes: 5, onNoMotion: { kind: 'off' }, doNotDisturb: true },
+      { start: { hour: 7, minute: 0 }, onMotion: { kind: 'nothing' }, noMotionAfterMinutes: 10, onNoMotion: { kind: 'nothing' } },
+    ],
+  };
+  const cfg = buildAccessoryConfiguration(spec);
+  assert.equal(cfg.motion.when.timeslots[0].start_time.time.hour, 7); // sorted by start
+  assert.equal(cfg.motion.when.timeslots[0].on_no_motion.recall_single[0].action, 'do_nothing');
+  assert.deepEqual(cfg.motion.when.timeslots[1].on_motion.recall_single[0].action, { recall: { rid: 'sc1', rtype: 'scene' } });
+  assert.equal(cfg.motion.when.timeslots[1].on_no_motion.recall_single[0].action, 'all_off');
+  assert.equal(cfg.motion.when.timeslots[1].do_not_disturb, true);
+  assert.deepEqual(cfg.motion.where, [{ group: { rid: 'room1', rtype: 'room' } }]);
+  assert.deepEqual(cfg.source, { rid: 'dev', rtype: 'device' });
+  assert.ok(cfg.light_level.daylight.sunrise_sunset);
+  assert.equal(buildAccessoryConfiguration({ ...spec, onlyWhenDark: false }).light_level, undefined);
+  const kept = { daylight: { daylight_sensitivity: { light_level_service: { rid: 'll', rtype: 'light_level' }, settings: { dark_threshold: 7267, offset: 7000 } } } };
+  assert.deepEqual(buildAccessoryConfiguration(spec, kept).light_level, kept);
+
+  const back = parseAccessoryConfiguration(cfg);
+  assert.equal(back.onlyWhenDark, true);
+  assert.equal(back.motionType, 'motion');
+  assert.deepEqual(back.where, [{ id: 'room1', kind: 'room' }]);
+  assert.equal(back.slots.length, 2);
+  assert.deepEqual(back.slots[1].onMotion, { kind: 'scene', sceneId: 'sc1' });
+  assert.equal(back.slots[1].onNoMotion.kind, 'off');
+  assert.equal(back.slots[1].doNotDisturb, true);
+  assert.equal(back.slots[0].noMotionAfterMinutes, 10);
+  assert.equal(parseAccessoryConfiguration({ source: { rid: 'x' } }), null);
+
+  assert.deepEqual(parseMotionTime('7pm'), { hour: 19, minute: 0 });
+  assert.deepEqual(parseMotionTime('22:30'), { hour: 22, minute: 30 });
+  assert.deepEqual(parseMotionTime('19h30'), { hour: 19, minute: 30 });
+  assert.deepEqual(parseMotionTime('12am'), { hour: 0, minute: 0 });
+  assert.deepEqual(parseMotionTime('midnight'), { hour: 0, minute: 0 });
+  assert.throws(() => parseMotionTime('25:00'));
+  assert.equal(formatMotionTime({ hour: 7, minute: 5 }), '07:05');
+  assert.equal(describeMotionSlots(back.slots, () => 'Nightlight', true), '07:00 nothing · 22:00 "Nightlight", off after 5 min · only when dark');
+  assert.equal(describeMotionSlots([back.slots[1]], () => 'Nightlight', false), '"Nightlight", off after 5 min · any time');
+});

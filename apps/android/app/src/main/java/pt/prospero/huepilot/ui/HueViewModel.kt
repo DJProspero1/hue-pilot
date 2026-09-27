@@ -19,6 +19,9 @@ import pt.prospero.huepilot.domain.XY
 import pt.prospero.huepilot.ui.assistant.AssistantViewModel
 import pt.prospero.huepilot.ui.onboarding.OnboardingViewModel
 import pt.prospero.huepilot.ui.settings.SettingsViewModel
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 /** Shared view model for every bridge-backed screen. */
 class HueViewModel(private val container: AppContainer) : ViewModel() {
@@ -86,6 +89,12 @@ class HueViewModel(private val container: AppContainer) : ViewModel() {
         val id = accessory.motionId ?: return@run
         repo.setMotionEnabled(id, enabled, accessory.motionType ?: "motion")
     }
+    fun setMotionAutomationEnabled(id: String, enabled: Boolean) = run {
+        val a = repo.snapshot.value.motionAutomations.firstOrNull { it.id == id } ?: return@run
+        // The bridge refuses an enabled-only PUT; the whole rule goes back with the flag.
+        repo.updateBehaviorInstance(id, buildJsonObject { put("enabled", enabled); putJsonObject("metadata") { put("name", a.name) }; put("configuration", a.configuration) })
+    }
+    fun deleteMotionAutomation(id: String) = run { repo.deleteBehaviorInstance(id) }
     fun renameDevice(deviceId: String, name: String) = run { if (name.isNotBlank()) repo.renameDevice(deviceId, name) }
 
     fun toggleFavouriteRoom(roomId: String) = run {

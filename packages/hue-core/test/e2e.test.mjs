@@ -227,3 +227,81 @@ test('e2e: scene create and delete through the client', async () => {
   const gone = await ctx().getHome();
   assert.equal(gone.sceneById[refs[0].rid], undefined);
 });
+
+test('e2e: motion automations — list, create, update, pause, delete, sensing', async () => {
+  const home0 = buildHome(await client.getAll());
+  assert.equal(home0.motionAutomations.length, 1);
+  const seeded = home0.motionAutomations[0];
+  assert.equal(seeded.sourceName, 'Office motion sensor');
+  assert.equal(seeded.sourceKind, 'sensor');
+  assert.equal(seeded.where[0].name, 'Office');
+  assert.match(seeded.summary, /"Focus"/);
+  assert.equal(seeded.onlyWhenDark, true);
+
+  let r = await executeTool('list_motion_automations', {}, ctx());
+  assert.ok(r.ok);
+  assert.equal(r.automations.length, 1);
+  assert.equal(r.automations[0].slots.length, 2);
+  assert.ok(r.sensors_without_automation.includes('Front door camera'));
+
+  // A camera gets a night-time rule: "when the driveway camera sees someone, Focus in the office, off after 3 min".
+  r = await executeTool('set_motion_automation', { sensor: 'Driveway camera', room: 'Office', on_motion: 'Focus', off_after_minutes: 3, from: '21:00', until: '06:30', only_when_dark: true }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.match(r.message, /Driveway camera → Office/);
+  const home1 = buildHome(await client.getAll());
+  const cam = home1.motionAutomations.find((a) => a.sourceKind === 'camera');
+  assert.ok(cam);
+  assert.equal(cam.motionType, 'camera_motion');
+  assert.equal(cam.where[0].name, 'Office');
+  assert.equal(cam.slots.length, 2);
+  assert.equal(cam.slots[0].start, '06:30');
+  assert.equal(cam.slots[0].onMotion.kind, 'nothing');
+  assert.equal(cam.slots[1].start, '21:00');
+  assert.equal(cam.slots[1].onMotion.sceneName, 'Focus');
+  assert.equal(cam.slots[1].noMotionAfterMinutes, 3);
+  assert.equal(cam.onlyWhenDark, true);
+
+  // Replace the office rule (same instance id): Focus all day, off after 2 minutes, any light level.
+  r = await executeTool('set_motion_automation', { sensor: 'office motion', on_motion: 'Focus', off_after_minutes: 2, only_when_dark: false }, ctx());
+  assert.ok(r.ok, r.message);
+  const office = buildHome(await client.getAll()).motionAutomations.find((a) => a.id === seeded.id);
+  assert.ok(office);
+  assert.equal(office.slots.length, 1);
+  assert.equal(office.onlyWhenDark, false);
+  assert.equal(office.slots[0].noMotionAfterMinutes, 2);
+  assert.equal(office.slots[0].onNoMotion.kind, 'off');
+
+  // "on" picks a scene of the room; a scene of another room is refused with the room's scenes listed.
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', on_motion: 'on' }, ctx());
+  assert.ok(r.ok, r.message);
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', on_motion: 'Savanna sunset' }, ctx());
+  assert.equal(r.ok, false);
+  assert.match(r.message, /Office/);
+
+  // Pause and resume touch only the flag.
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', enabled: false }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.equal(buildHome(await client.getAll()).motionAutomations.find((a) => a.id === seeded.id).enabled, false);
+  r = await executeTool('set_motion_automation', { sensor: 'Office motion sensor', enabled: true }, ctx());
+  assert.equal(buildHome(await client.getAll()).motionAutomations.find((a) => a.id === seeded.id).enabled, true);
+
+  // Motion sensing itself.
+  r = await executeTool('set_motion_sensing', { sensor: 'Office motion sensor', enabled: false }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.equal(buildHome(await client.getAll()).accessories.find((a) => a.name === 'Office motion sensor').motion.enabled, false);
+  await executeTool('set_motion_sensing', { sensor: 'Office motion sensor', enabled: true }, ctx());
+  r = await executeTool('set_motion_sensing', { sensor: 'Front door camera', enabled: false }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.equal(buildHome(await client.getAll()).cameras.find((c) => c.name === 'Front door camera').motionEnabled, false);
+
+  // Delete by sensor name; unknown sensors are reported with the available ones.
+  r = await executeTool('delete_motion_automation', { sensor: 'driveway camera' }, ctx());
+  assert.ok(r.ok, r.message);
+  assert.equal(buildHome(await client.getAll()).motionAutomations.length, 1);
+  r = await executeTool('delete_motion_automation', { sensor: 'garage sensor' }, ctx());
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'not_found');
+
+  assert.ok(buildSystemPrompt(home1).includes('Motion automations:'));
+  assert.ok(buildSystemPrompt(home1).includes('set_motion_automation'));
+});

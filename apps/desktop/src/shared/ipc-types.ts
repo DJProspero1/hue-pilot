@@ -169,6 +169,9 @@ export interface HueApi {
   setCameraMotionDetection(cameraMotionId: string, enabled: boolean): Promise<void>;
   /** Motion timeline (cameras + motion sensors) collected while the app runs, newest first. */
   getMotionEvents(): Promise<MotionEvent[]>;
+  /** Pause/resume a sensor's or camera's motion automation (bridge behavior_instance). */
+  setMotionAutomationEnabled(id: string, enabled: boolean): Promise<void>;
+  deleteMotionAutomation(id: string): Promise<void>;
 
   // Hue account / cloud live view (experimental)
   getCloudStatus(): Promise<CloudStatus>;

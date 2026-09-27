@@ -1,4 +1,5 @@
 import { GAMUT_C, mirekToHex, mirekToKelvin, xyToHex } from './color.ts';
+import { describeMotionSlots, formatMotionTime, isMotionAutomation, parseAccessoryConfiguration, type MotionAction } from './automations.ts';
 import type {
   BridgeHomeResource,
   BridgeResource,
@@ -18,6 +19,7 @@ import type {
   TemperatureResource,
   XY,
   ZigbeeConnectivityResource,
+  BehaviorInstanceResource,
 } from './types.ts';
 
 export interface LightView {
@@ -152,6 +154,43 @@ export interface BridgeInfo {
   homeGroupedLightId?: string;
 }
 
+export interface MotionActionView {
+  kind: 'nothing' | 'off' | 'scene';
+  sceneId?: string;
+  sceneName?: string;
+}
+
+export interface MotionSlotView {
+  /** HH:MM */
+  start: string;
+  onMotion: MotionActionView;
+  noMotionAfterMinutes: number;
+  onNoMotion: MotionActionView;
+  doNotDisturb: boolean;
+}
+
+/** What a motion sensor or camera makes the lights do (a behavior_instance of the Hue Accessories script). */
+export interface MotionAutomationView {
+  id: string;
+  name: string;
+  enabled: boolean;
+  status?: string;
+  lastError?: string;
+  sourceDeviceId: string;
+  sourceName: string;
+  sourceKind: 'sensor' | 'camera';
+  motionServiceId: string;
+  motionType: 'motion' | 'camera_motion';
+  where: { id: string; kind: 'room' | 'zone'; name: string }[];
+  onlyWhenDark: boolean;
+  /** The bridge's darkness condition as stored (kept when updating). */
+  lightLevel?: Record<string, unknown>;
+  /** The bridge configuration verbatim: a PUT that changes only `enabled` is refused unless it is sent back too. */
+  configuration: Record<string, unknown>;
+  slots: MotionSlotView[];
+  summary: string;
+}
+
 export interface HomeModel {
   bridge?: BridgeInfo;
   lights: LightView[];
@@ -162,6 +201,7 @@ export interface HomeModel {
   scenes: SceneView[];
   accessories: AccessoryView[];
   cameras: CameraView[];
+  motionAutomations: MotionAutomationView[];
   lightById: Record<string, LightView>;
   groupById: Record<string, GroupView>;
   sceneById: Record<string, SceneView>;
@@ -177,6 +217,7 @@ export const EMPTY_HOME: HomeModel = {
   scenes: [],
   accessories: [],
   cameras: [],
+  motionAutomations: [],
   lightById: {},
   groupById: {},
   sceneById: {},
@@ -293,9 +334,13 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
   const buttons = new Map<string, ButtonResource[]>();
   let bridgeRaw: BridgeResource | undefined;
   let bridgeHome: BridgeHomeResource | undefined;
+  const behaviors: BehaviorInstanceResource[] = [];
 
   for (const r of byId.values()) {
     switch (r.type) {
+      case 'behavior_instance':
+        behaviors.push(r as BehaviorInstanceResource);
+        break;
       case 'light':
         lightsRaw.push(r as LightResource);
         break;
@@ -669,6 +714,36 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
 
   lights.sort((a, b) => (a.roomName ?? '~').localeCompare(b.roomName ?? '~') || a.name.localeCompare(b.name));
 
+  // Motion automations ---------------------------------------------------------
+  const motionAutomations: MotionAutomationView[] = [];
+  for (const b of behaviors) {
+    if (!isMotionAutomation(b)) continue;
+    const spec = parseAccessoryConfiguration(b.configuration);
+    if (!spec) continue;
+    const device = devicesRaw.get(spec.sourceDeviceId);
+    const sceneName = (id: string) => sceneById[id]?.name ?? 'scene';
+    const toView = (a: MotionAction): MotionActionView => (a.kind === 'scene' ? { kind: 'scene', sceneId: a.sceneId, sceneName: sceneName(a.sceneId) } : { kind: a.kind });
+    motionAutomations.push({
+      id: b.id,
+      name: b.metadata?.name?.trim() || device?.metadata?.name || 'Motion automation',
+      enabled: b.enabled !== false,
+      status: b.status,
+      lastError: b.last_error || undefined,
+      sourceDeviceId: spec.sourceDeviceId,
+      sourceName: device?.metadata?.name ?? device?.product_data?.product_name ?? 'Sensor',
+      sourceKind: spec.motionType === 'camera_motion' || cameraDeviceIds.has(spec.sourceDeviceId) ? 'camera' : 'sensor',
+      motionServiceId: spec.motionServiceId,
+      motionType: spec.motionType,
+      where: spec.where.map((w) => ({ ...w, name: groupById[w.id]?.name ?? 'room' })),
+      onlyWhenDark: spec.onlyWhenDark,
+      lightLevel: (b.configuration.light_level as Record<string, unknown> | undefined) ?? undefined,
+      configuration: b.configuration,
+      slots: spec.slots.map((sl) => ({ start: formatMotionTime(sl.start), onMotion: toView(sl.onMotion), noMotionAfterMinutes: sl.noMotionAfterMinutes, onNoMotion: toView(sl.onNoMotion), doNotDisturb: !!sl.doNotDisturb })),
+      summary: describeMotionSlots(spec.slots, sceneName, spec.onlyWhenDark),
+    });
+  }
+  motionAutomations.sort((a, b) => a.sourceName.localeCompare(b.sourceName));
+
   return {
     bridge,
     lights,
@@ -679,6 +754,7 @@ export function buildHome(resources: Iterable<Resource>): HomeModel {
     scenes,
     accessories,
     cameras,
+    motionAutomations,
     lightById,
     groupById,
     sceneById,

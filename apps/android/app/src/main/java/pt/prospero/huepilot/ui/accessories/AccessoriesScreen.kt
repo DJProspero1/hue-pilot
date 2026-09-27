@@ -69,6 +69,9 @@ import pt.prospero.huepilot.ui.components.relativeTime
 import pt.prospero.huepilot.ui.theme.HuePalette
 import pt.prospero.huepilot.ui.theme.hueTokens
 import kotlin.math.roundToInt
+import pt.prospero.huepilot.data.hue.MotionAutomationUi
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.foundation.layout.size
 
 private const val HUE_APP_PACKAGE = "com.philips.lighting.hue2"
 
@@ -98,12 +101,20 @@ fun AccessoriesScreen(vm: HueViewModel) {
             item { SectionTitle("Cameras", count = cameras.size) }
             items(cameras, key = { it.deviceId }) { c ->
                 CameraCard(c, floodlight = c.floodlightLightId?.let { snapshot.light(it) }, vm)
+                snapshot.motionAutomations.firstOrNull { it.sourceDeviceId == c.deviceId }?.let { m ->
+                    AutomationRow(m, onEnabled = { vm.setMotionAutomationEnabled(m.id, it) }, onDelete = { vm.deleteMotionAutomation(m.id) })
+                }
             }
             item { CameraNote() }
         }
         if (sensors.isNotEmpty()) {
             item { SectionTitle("Motion sensors", count = sensors.size, modifier = Modifier.padding(top = 8.dp)) }
-            items(sensors, key = { it.deviceId }) { a -> SensorCard(a, onMotionEnabled = { vm.setMotionEnabled(a, it) }) }
+            items(sensors, key = { it.deviceId }) { a ->
+                SensorCard(a, onMotionEnabled = { vm.setMotionEnabled(a, it) })
+                snapshot.motionAutomations.firstOrNull { it.sourceDeviceId == a.deviceId }?.let { m ->
+                    AutomationRow(m, onEnabled = { vm.setMotionAutomationEnabled(m.id, it) }, onDelete = { vm.deleteMotionAutomation(m.id) })
+                }
+            }
         }
         if (switches.isNotEmpty()) {
             item { SectionTitle("Switches", count = switches.size, modifier = Modifier.padding(top = 8.dp)) }
@@ -117,6 +128,27 @@ fun AccessoriesScreen(vm: HueViewModel) {
             item { SectionTitle("Bridge", modifier = Modifier.padding(top = 8.dp)) }
             items(bridge, key = { it.deviceId }) { a -> BridgeCard(a, snapshot.bridge?.bridgeId, snapshot.bridge?.timeZone) }
         }
+    }
+}
+
+/** The bridge rule behind a sensor or camera: which room it drives and what happens on motion. */
+@Composable
+private fun AutomationRow(a: MotionAutomationUi, onEnabled: (Boolean) -> Unit, onDelete: () -> Unit) {
+    Row(
+        Modifier
+            .padding(horizontal = 28.dp)
+            .padding(bottom = 8.dp)
+            .fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(a.whereNames.joinToString(", "), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(a.summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        TextButton(onClick = onDelete) { Text("Remove") }
+        HueSwitch(checked = a.enabled, onCheckedChange = onEnabled)
     }
 }
 
