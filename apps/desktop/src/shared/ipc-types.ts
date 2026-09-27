@@ -245,6 +245,11 @@ export interface HueApi {
 export interface CloudHome {
   id: string;
   name: string;
+  /** Bridge ids linked to the home (from the account service). */
+  bridges?: string[];
+  /** Devices linked to the home: `type` is the model id (CMB001, CMW002, BSB003…), `id` the cloud device id. */
+  devices?: { type: string; id: string }[];
+  securityActivated?: boolean;
 }
 
 export interface CloudCamera {
@@ -255,6 +260,13 @@ export interface CloudCamera {
   online: boolean | null;
   /** Field names the cloud returned for this device (diagnostics only). */
   raw: string[];
+  productName?: string | null;
+  /** Battery percentage (battery cameras only). */
+  battery?: number | null;
+  /** Wi-Fi strength as the cloud reports it (0–4). */
+  wifiStrength?: number | null;
+  /** "Live view protection" (E2EE-signed live view) switched on for this camera. */
+  liveViewProtected?: boolean | null;
 }
 
 export interface CloudStatus {

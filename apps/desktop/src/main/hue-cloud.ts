@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { AwsCredentials, IceServer } from './kvs-signaling.ts';
 import { getIceServerConfig, getSignalingChannelEndpoints, normalizeIceServers, presignWebSocketUrl } from './kvs-signaling.ts';
 import { offerSignatureVariants, type OfferSignatureVariant } from './hue-e2ee.ts';
+import { decodeMessage, getBool, getMessages, getString, grpcStatusName, grpcWebUnary, type ProtoMessage } from './grpc-web.ts';
 import type { CloudCamera, CloudHome, CloudStatus, LiveViewSession } from '../shared/ipc-types.ts';
 
 /**
@@ -16,6 +17,12 @@ import type { CloudCamera, CloudHome, CloudStatus, LiveViewSession } from '../sh
  * KVS signaling. This module reproduces the first two steps; the WebRTC session runs in the
  * renderer (Chromium). Endpoints and the OAuth client are the ones the official app uses; they are
  * not documented by Signify and can change without notice.
+ *
+ * Homes and their devices come from the same gRPC-Web service the Hue account portal uses
+ * (`hue.accounts.v1.HomeService/ListHomes` on api.account.meethue.com); each home lists its devices
+ * as `{type, id}` where camera types are the Hue Secure model ids (CMB001 battery, CMW00x wired /
+ * floodlight). Camera names come from the portal's REST endpoint
+ * `security/device-configuration/v1/home/{home}/device/{camera}`.
  *
  * Optional "live view protection" (Hue app → camera settings) makes the camera require an ECDSA
  * signature on the SDP offer, which needs the home's E2EE passphrase-derived key. Signify's
@@ -158,9 +165,129 @@ export function pickHomes(data: unknown): CloudHome[] {
     .filter((h) => h.id);
 }
 
-/** Pulls AWS credentials, channel ARN, region and ICE servers out of the live-stream response, whatever its exact shape. */
-export function parseLiveStreamCredentials(data: unknown, cameraId: string): { creds: AwsCredentials | null; channelArn: string | null; region: string | null; iceServers: IceServer[]; keys: string[] } {
+/** Hue Secure camera model ids as the account portal knows them (CMW001–CMW005, CMB001–CMB002). */
+export const HUE_CAMERA_MODELS = /^CM[BW]\d{3}$/i;
+
+export function cameraModelLabel(type: string): string {
+  const t = type.toUpperCase();
+  if (t.startsWith('CMB')) return 'Secure battery camera';
+  if (t === 'CMW002') return 'Secure floodlight camera';
+  if (t.startsWith('CMW')) return 'Secure wired camera';
+  return 'Camera';
+}
+
+/** Cameras among a home's devices (from ListHomes). */
+export function homeCameras(home: CloudHome): { type: string; id: string }[] {
+  return (home.devices ?? []).filter((d) => HUE_CAMERA_MODELS.test(d.type));
+}
+
+/**
+ * Builds a CloudCamera from the device-configuration document. The cloud answers
+ * `{ reported: { id, metadata: { name, archetype }, product_data: { model_id, product_name }, service: { camera: { "0": { e2ee: { live_view: { enabled } } } },
+ * device_power: { "0": { power_state: { battery_level } } }, wifi_connectivity: { "0": { strength } }, zigbee_connectivity: { "0": { status } } } } }`.
+ */
+export function pickCameraDetails(config: unknown, device: { type: string; id: string }): CloudCamera {
+  const root = (config && typeof config === 'object' && !Array.isArray(config) ? config : {}) as Record<string, unknown>;
+  const rep = (root.reported && typeof root.reported === 'object' ? root.reported : root) as Record<string, unknown>;
+  const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+  const meta = obj(rep.metadata);
+  const product = obj(rep.product_data);
+  const service = obj(rep.service);
+  const svc = (name: string) => obj(obj(service[name])['0']);
+  const power = obj(svc('device_power').power_state);
+  const liveView = obj(obj(svc('camera').e2ee).live_view);
+  const zigbee = svc('zigbee_connectivity');
+  const wifi = svc('wifi_connectivity');
+  const model = String(product.model_id ?? device.type ?? '') || null;
+  const productName = typeof product.product_name === 'string' ? product.product_name : null;
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return {
+    id: device.id,
+    name: String(meta.name ?? rep.name ?? '') || `${cameraModelLabel(device.type)} ${device.id.slice(-4)}`,
+    model,
+    online: typeof zigbee.status === 'string' ? zigbee.status === 'connected' : typeof rep.enabled === 'boolean' ? rep.enabled : null,
+    raw: Object.keys(rep),
+    productName,
+    battery: num(power.battery_level),
+    wifiStrength: num(wifi.strength),
+    liveViewProtected: typeof liveView.enabled === 'boolean' ? liveView.enabled : null,
+  };
+}
+
+/**
+ * Decodes `hue.accounts.v1.ListHomesResponse` (field 1: repeated BasicHome). BasicHome fields, from
+ * the portal's generated code: 1 id, 2 name, 3 user_count, 4 bridges (HomeBridgeRef: 1 id),
+ * 5 max_users, 6 devices (Device: 1 type, 2 id), 7 admin_count, 8 revision, 9 permissions,
+ * 10 country_code, 11 time_zone, 12 device_update_preference, 13 security_activated.
+ */
+export function parseListHomes(payload: Buffer): CloudHome[] {
+  return getMessages(decodeMessage(payload), 1)
+    .map((h: ProtoMessage): CloudHome => {
+      const id = getString(h, 1);
+      return {
+        id,
+        name: getString(h, 2) || (id ? `Home ${id}` : ''),
+        bridges: getMessages(h, 4)
+          .map((b) => getString(b, 1))
+          .filter(Boolean),
+        devices: getMessages(h, 6)
+          .map((d) => ({ type: getString(d, 1), id: getString(d, 2) }))
+          .filter((d) => d.id),
+        securityActivated: getBool(h, 13),
+      };
+    })
+    .filter((h) => h.id);
+}
+
+/** Prefer the home that actually has cameras, then the first one. */
+export function pickDefaultHome(homes: CloudHome[]): CloudHome | undefined {
+  return homes.find((h) => homeCameras(h).length) ?? homes[0];
+}
+
+export interface LiveStreamGrant {
+  creds: AwsCredentials | null;
+  channelArn: string | null;
+  region: string | null;
+  iceServers: IceServer[];
+  /** KVS signaling endpoints when the cloud hands them out (saves a GetSignalingChannelEndpoint call). */
+  endpoints: { wss: string | null; https: string | null };
+  /** Earliest expiry of the credentials/TURN grants, epoch ms. */
+  expiresAt: number | null;
+  keys: string[];
+}
+
+/**
+ * Pulls AWS credentials, channel ARN, region and ICE servers out of the live-stream response.
+ * The cloud answers (2026): `{ credentials: { AccessKeyId, SecretAccessKey, SessionToken, Expiration },
+ * signaling_channels: [{ id, arn }], turn_servers: [{ device_id, ice_servers: [{ urls, username, password, expires_at }],
+ * http_signal_channel_endpoint, wss_signal_channel_endpoint }], stun_servers: ["stun:…"], earliest_expiry }`.
+ * Other shapes (per-device objects, camelCase names) are still tolerated.
+ */
+export function parseLiveStreamCredentials(data: unknown, cameraId: string): LiveStreamGrant {
   const keys: string[] = [];
+  const wanted = cameraId.toUpperCase();
+  const asList = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? (v.filter((x) => x && typeof x === 'object') as Record<string, unknown>[]) : []);
+  const forDevice = (list: Record<string, unknown>[]) => list.find((e) => String(e.id ?? e.device_id ?? e.deviceId ?? '').toUpperCase() === wanted) ?? list[0];
+  const root = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+
+  const channel = forDevice(asList(root.signaling_channels ?? root.signalingChannels));
+  const turn = forDevice(asList(root.turn_servers ?? root.turnServers));
+  const iceServers: IceServer[] = [];
+  if (turn) {
+    if (Array.isArray(turn.ice_servers ?? turn.iceServers)) iceServers.push(...normalizeIceServers(turn.ice_servers ?? turn.iceServers));
+    else if (turn.urls || turn.url) iceServers.push(...normalizeIceServers([turn]));
+  }
+  for (const s of Array.isArray(root.stun_servers ?? root.stunServers) ? (root.stun_servers ?? root.stunServers) as unknown[] : []) {
+    if (typeof s === 'string') iceServers.push({ urls: s });
+  }
+  const endpoints = {
+    wss: (typeof turn?.wss_signal_channel_endpoint === 'string' ? turn.wss_signal_channel_endpoint : null) as string | null,
+    https: (typeof turn?.http_signal_channel_endpoint === 'string' ? turn.http_signal_channel_endpoint : null) as string | null,
+  };
+  const expiry = typeof root.earliest_expiry === 'string' ? Date.parse(root.earliest_expiry) : NaN;
+  const expiresAt = Number.isFinite(expiry) ? expiry : null;
+  const channelArnDirect = channel && typeof channel.arn === 'string' ? channel.arn : null;
+
   const walk = (v: unknown, prefix: string, depth: number) => {
     if (depth > 3 || !v || typeof v !== 'object') return;
     for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
@@ -199,11 +326,11 @@ export function parseLiveStreamCredentials(data: unknown, cameraId: string): { c
         sessionToken: (credsObj.SessionToken ?? credsObj.sessionToken ?? credsObj.session_token) as string | undefined,
       }
     : null;
-  const channelArn = (find(node, ['channelArn', 'channel_arn', 'ChannelARN', 'signalingChannelArn', 'signaling_channel_arn']) as string | undefined) ?? null;
+  const channelArn = channelArnDirect ?? (find(node, ['channelArn', 'channel_arn', 'ChannelARN', 'signalingChannelArn', 'signaling_channel_arn']) as string | undefined) ?? null;
   let region = (find(node, ['region', 'aws_region', 'awsRegion', 'Region']) as string | undefined) ?? null;
   if (!region && channelArn) region = channelArn.split(':')[3] ?? null;
-  const iceRaw = find(node, ['iceServers', 'ice_servers', 'turnServers', 'turn_servers', 'IceServerList']);
-  return { creds: creds && creds.accessKeyId && creds.secretAccessKey ? creds : null, channelArn, region, iceServers: normalizeIceServers(iceRaw), keys };
+  if (!iceServers.length) iceServers.push(...normalizeIceServers(find(node, ['iceServers', 'ice_servers', 'turnServers', 'turn_servers', 'IceServerList'])));
+  return { creds: creds && creds.accessKeyId && creds.secretAccessKey ? creds : null, channelArn, region, iceServers, endpoints, expiresAt, keys };
 }
 
 export interface HueCloudOptions {
@@ -219,6 +346,8 @@ export class HueCloud extends EventEmitter {
   private homes: CloudHome[] = [];
   private cameras: CloudCamera[] = [];
   private homeId: string | null = null;
+  /** True when the user typed the home id by hand (kept even if ListHomes does not return it). */
+  private homeManual = false;
   private lastError: string | null = null;
   private busy = false;
   private readonly opts: HueCloudOptions;
@@ -425,38 +554,76 @@ export class HueCloud extends EventEmitter {
     return { status: res.status, data };
   }
 
+  /**
+   * `hue.accounts.v1.HomeService/ListHomes` over gRPC-Web, exactly as the Hue account portal does.
+   * Sets [authRejected] and throws when the token is not accepted.
+   */
+  private async listHomes(): Promise<CloudHome[]> {
+    await this.refreshIfNeeded();
+    const call = { base: HUE_ACCOUNT_API, method: '/hue.accounts.v1.HomeService/ListHomes', request: Buffer.alloc(0), headers: { authorization: `Bearer ${this.tokens!.accessToken}` } };
+    let r = await grpcWebUnary({ ...call, format: 'binary' });
+    // Some proxies only speak the base64 flavour; retry with it when binary was refused outright.
+    if (r.grpcStatus === null && ![401, 403].includes(r.httpStatus) && r.httpStatus >= 400) r = await grpcWebUnary({ ...call, format: 'text' });
+    this.log(`gRPC HomeService/ListHomes → HTTP ${r.httpStatus}, ${grpcStatusName(r.grpcStatus)}${r.grpcMessage ? ` (${r.grpcMessage})` : ''}${r.bodyText ? ` ${r.bodyText.slice(0, 120)}` : ''}`);
+    if (r.httpStatus === 401 || r.httpStatus === 403 || r.grpcStatus === 16 || r.grpcStatus === 7) {
+      this.authRejected = true;
+      throw new Error(`The Hue account API rejected the session token (HTTP ${r.httpStatus}, ${grpcStatusName(r.grpcStatus)}).`);
+    }
+    if (r.httpStatus >= 400 || (r.grpcStatus !== null && r.grpcStatus !== 0)) throw new Error(`Listing homes failed (HTTP ${r.httpStatus}, ${grpcStatusName(r.grpcStatus)}${r.grpcMessage ? `: ${r.grpcMessage}` : ''}).`);
+    const homes = r.messages.length ? parseListHomes(r.messages[0]) : [];
+    this.log(
+      homes.length
+        ? `Homes: ${homes.map((h) => `${h.name} [${h.id}] — ${homeCameras(h).length} camera(s), ${h.bridges?.length ?? 0} bridge(s), ${(h.devices ?? []).length} device(s)${h.securityActivated ? ', Secure active' : ''}`).join('; ')}`
+        : 'ListHomes returned no homes for this account.',
+    );
+    return homes;
+  }
+
+  /** Camera details from the portal's REST endpoint; returns whatever fields the cloud has (name, strength, …). */
+  private async cameraConfig(homeId: string, deviceId: string): Promise<Record<string, unknown>> {
+    const r = await this.api('GET', `/security/device-configuration/v1/home/${encodeURIComponent(homeId)}/device/${encodeURIComponent(deviceId)}`);
+    return r.status === 200 && r.data && typeof r.data === 'object' && !Array.isArray(r.data) ? (r.data as Record<string, unknown>) : {};
+  }
+
   /** Lists homes and cameras of the signed-in account. */
   async discover(): Promise<CloudStatus> {
     this.busy = true;
     this.lastError = null;
     this.emitStatus();
     try {
-      let homes: CloudHome[] = [];
-      let unauthorized = 0;
-      for (const p of ['/security/vss/v1/homes', '/data/v1/homes']) {
-        const r = await this.api('GET', p);
-        if (r.status === 200) {
-          homes = pickHomes(r.data);
-          if (homes.length) break;
-        } else if (r.status === 401 || r.status === 403) unauthorized++;
-      }
-      this.authRejected = unauthorized === 2 && homes.length === 0;
-      if (this.authRejected) {
-        this.lastError = 'The Hue account API rejected the session token (401).';
-        this.log(this.lastError);
-      }
+      this.authRejected = false;
+      const homes = await this.listHomes();
       this.homes = homes;
-      if (!this.homeId || !homes.some((h) => h.id === this.homeId)) this.homeId = homes[0]?.id ?? this.homeId;
+      const known = homes.some((h) => h.id === this.homeId);
+      if (!known && !(this.homeManual && this.homeId)) this.homeId = pickDefaultHome(homes)?.id ?? null;
+
+      const cameras: CloudCamera[] = [];
       if (this.homeId) {
-        const r = await this.api('GET', `/security/device-configuration/v1/home/${encodeURIComponent(this.homeId)}/devices`);
-        if (r.status === 200) this.cameras = pickCameras(r.data);
-        else this.lastError = `Could not list cameras (HTTP ${r.status}).`;
+        const home = homes.find((h) => h.id === this.homeId);
+        for (const d of home ? homeCameras(home) : []) {
+          const cam = pickCameraDetails(await this.cameraConfig(this.homeId, d.id), d);
+          this.log(`Camera ${cam.name} (${cam.productName ?? cam.model ?? d.type}, ${d.id}): ${cam.online === null ? 'link unknown' : cam.online ? 'connected' : 'not connected'}${cam.battery !== null && cam.battery !== undefined ? `, battery ${cam.battery}%` : ''}, live view protection ${cam.liveViewProtected === null ? 'unknown' : cam.liveViewProtected ? 'ON (needs the passphrase)' : 'off'}`);
+          cameras.push(cam);
+        }
+        if (!cameras.length) {
+          // Home typed by hand, or a home whose device list did not carry the cameras: try the flat device listing.
+          const r = await this.api('GET', `/security/device-configuration/v1/home/${encodeURIComponent(this.homeId)}/devices`);
+          if (r.status === 200) cameras.push(...pickCameras(r.data));
+        }
+        this.cameras = cameras;
+        if (!cameras.length) {
+          this.lastError = home
+            ? `Home "${home.name}" has ${(home.devices ?? []).length} device(s) linked to the account but no Hue Secure camera. Cameras are added to the account by the Hue app when they are set up.`
+            : `No cameras were found for home ${this.homeId}.`;
+        }
       } else {
-        this.lastError = 'The Hue account has no home with cameras.';
+        this.cameras = [];
+        this.lastError = homes.length ? 'No home selected.' : 'ListHomes returned no homes for this Hue account. Check that the app is signed in with the same account as the Hue app (Hue app → Settings → Hue account), or enter the home id by hand below.';
       }
       this.save();
     } catch (err) {
       this.lastError = (err as Error).message;
+      this.log(`Discovery failed: ${this.lastError}`);
     } finally {
       this.busy = false;
       this.emitStatus();
@@ -465,7 +632,10 @@ export class HueCloud extends EventEmitter {
   }
 
   async setHome(homeId: string): Promise<CloudStatus> {
-    this.homeId = homeId;
+    const id = homeId.trim();
+    if (!id) return this.status();
+    this.homeId = id;
+    this.homeManual = !this.homes.some((h) => h.id === id);
     return this.discover();
   }
 
@@ -486,7 +656,9 @@ export class HueCloud extends EventEmitter {
     if (!parsed.channelArn) throw new Error(`No signaling channel in the live-stream response (keys: ${parsed.keys.join(', ')}).`);
     const region = parsed.region ?? 'eu-west-1';
 
-    const endpoints = await getSignalingChannelEndpoints(region, parsed.channelArn, parsed.creds);
+    // The cloud usually hands out the signaling endpoints with the grant; ask KVS only when it did not.
+    const endpoints = parsed.endpoints.wss ? parsed.endpoints : await getSignalingChannelEndpoints(region, parsed.channelArn, parsed.creds);
+    this.log(`Signaling endpoints ${parsed.endpoints.wss ? 'from the Hue cloud' : 'from KVS'}: ${endpoints.wss ?? '-'}${parsed.expiresAt ? `; grant valid until ${new Date(parsed.expiresAt).toLocaleTimeString()}` : ''}`);
     if (!endpoints.wss) throw new Error('Kinesis returned no WebSocket endpoint for the camera channel.');
     const clientId = `HuePilot-${Math.random().toString(36).slice(2, 10)}`;
     let iceServers = parsed.iceServers;
@@ -509,7 +681,7 @@ export class HueCloud extends EventEmitter {
       region,
       channelArn: parsed.channelArn,
       responseKeys: parsed.keys,
-      expiresAt: Date.now() + 290_000,
+      expiresAt: parsed.expiresAt ?? Date.now() + 290_000,
     };
   }
 }

@@ -233,6 +233,7 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
   const [pasted, setPasted] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [showPassphrase, setShowPassphrase] = useState(false);
+  const [manualHome, setManualHome] = useState('');
 
   const addLog = (line: string) => setLog((l) => [...l.slice(-199), `${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}  ${line}`]);
 
@@ -336,6 +337,7 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
                 {status.homes.map((h) => (
                   <option key={h.id} value={h.id}>{h.name}</option>
                 ))}
+                {status.homeId && !status.homes.some((h) => h.id === status.homeId) && <option value={status.homeId}>Home {status.homeId}</option>}
               </Select>
             )}
             <Button variant="subtle" size="sm" icon={<RefreshCw size={14} />} loading={busy === 'refresh' || status.busy} onClick={() => run('refresh', () => window.hue.cloudRefresh())}>
@@ -351,13 +353,23 @@ export function CloudLiveViewCard({ cameras }: { cameras: { id: string; name: st
               cloudCams.map((c) => (
                 <Button key={c.id} variant={session?.cameraId === c.id ? 'primary' : 'outline'} icon={<Video size={14} />} loading={busy === c.id} onClick={() => watch(c)}>
                   {label(c)}
+                  {c.battery !== null && c.battery !== undefined ? ` ${c.battery}%` : ''}
                   {c.online === false ? ' (offline)' : ''}
+                  {c.liveViewProtected ? ' (protected)' : ''}
                 </Button>
               ))
             ) : (
               <span className="text-xs text-muted">{status.busy ? 'Looking for cameras…' : 'No cameras were returned for this home. Use Refresh, or check the log below.'}</span>
             )}
           </div>
+          {!cloudCams.length && !status.busy && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Input value={manualHome} onChange={(e) => setManualHome(e.target.value)} placeholder="Home id by hand (account.meethue.com → Homes → the number in the address bar)" className="flex-1 min-w-[280px]" />
+              <Button variant="subtle" size="sm" disabled={!manualHome.trim()} loading={busy === 'home'} onClick={() => run('home', async () => { await window.hue.cloudSetHome(manualHome.trim()); setManualHome(''); })}>
+                Use this home
+              </Button>
+            </div>
+          )}
           <div className="mt-3 rounded-xl surface-2 p-3">
             <div className="flex items-center gap-2 text-sm font-medium">
               <KeyRound size={14} className="text-accent" /> E2EE passphrase {status.hasPassphrase && <span className="text-xs font-normal text-emerald-400">stored</span>}
