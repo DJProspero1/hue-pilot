@@ -193,6 +193,15 @@ export interface HueApi {
   /** Recent cloud/live-view log lines (for the diagnostics panel). */
   cloudLog(): Promise<string[]>;
 
+  // camera engine: the real Philips Hue app in a hidden Android emulator, streamed into Hue Pilot
+  getEmulatorStatus(): Promise<EmulatorStatus>;
+  emulatorEnsureRunning(): Promise<EmulatorStatus>;
+  emulatorOpenCamera(name: string): Promise<EmulatorStatus>;
+  emulatorCloseCamera(): Promise<EmulatorStatus>;
+  emulatorStartStream(): Promise<EmulatorStatus>;
+  emulatorStopStream(): Promise<EmulatorStatus>;
+  emulatorStop(): Promise<EmulatorStatus>;
+
   searchLights(): Promise<void>;
   updateGroupChildren(type: 'room' | 'zone', id: string, children: { rid: string; rtype: string }[]): Promise<void>;
   createGroup(type: 'room' | 'zone', name: string, archetype: string, children: { rid: string; rtype: string }[]): Promise<string>;
@@ -230,6 +239,9 @@ export interface HueApi {
   onNavigate(cb: (route: string) => void): () => void;
   onSettings(cb: (settings: Settings) => void): () => void;
   onMotionEvent(cb: (event: MotionEvent) => void): () => void;
+  onEmulatorStatus(cb: (status: EmulatorStatus) => void): () => void;
+  /** Raw Annex-B H.264 chunks of the camera engine's screen, or `{ restart: true }` when the stream re-keys. */
+  onEmulatorFrame(cb: (frame: Uint8Array | { restart: true }) => void): () => void;
   onCloudStatus(cb: (status: CloudStatus) => void): () => void;
   onCloudLog(cb: (line: string) => void): () => void;
 }
@@ -273,6 +285,23 @@ export interface CloudStatus {
   /** A system-browser sign-in is waiting for the redirect. */
   pendingLogin: { startedAt: number; method: 'browser' | 'clipboard' } | null;
   hasPassphrase: boolean;
+}
+
+/** The camera engine: the official Hue app running in a hidden Android emulator on this PC. */
+export interface EmulatorStatus {
+  /** Android SDK with adb and the emulator was found. */
+  available: boolean;
+  state: 'absent' | 'stopped' | 'starting' | 'booting' | 'preparing' | 'ready' | 'error';
+  avd: string | null;
+  serial: string | null;
+  hueAppInstalled: boolean | null;
+  /** Camera whose live view is open in the Hue app, if any. */
+  camera: string | null;
+  /** Where the video sits on the emulator screen (pixels), so the renderer can crop to it. */
+  videoBox: { x: number; y: number; w: number; h: number } | null;
+  streaming: boolean;
+  error: string | null;
+  hint: string | null;
 }
 
 /** Everything the renderer needs to open a WebRTC live-view session through Kinesis signaling. */

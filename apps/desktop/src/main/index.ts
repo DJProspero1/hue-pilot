@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, shell, Tray } from 'electron';
+import { EmulatorHost } from './hue-emulator.ts';
 import {
   buildSystemPrompt,
   buildLocalTime,
@@ -55,6 +56,19 @@ const cloud = new HueCloud({
   },
 });
 cloud.on('status', (s) => broadcast('hue:cloud-status', s));
+
+// Camera engine: the official Hue app in a hidden Android emulator, streamed into the Cameras page.
+const emulator = new EmulatorHost({
+  log: (line) => {
+    const entry = `${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}  [camera engine] ${line}`;
+    cloudLog.push(entry);
+    if (cloudLog.length > 200) cloudLog.shift();
+    broadcast('hue:cloud-log', entry);
+  },
+});
+emulator.on('status', (s) => broadcast('hue:emu-status', s));
+emulator.on('frame', (chunk: Buffer) => broadcast('hue:emu-frame', chunk));
+emulator.on('stream-restart', () => broadcast('hue:emu-frame', { restart: true }));
 /**
  * Audiences to try for the Hue Auth0 login, in order. Probed on 2026-09-26: the tenant accepts
  * `https://account.meethue.com` and the default audience; `https://api.meethue.com` (used by an
@@ -557,6 +571,13 @@ const handlers: Handlers = {
   cloudSetHome: (homeId: string) => cloud.setHome(homeId),
   cloudPrepareLiveView: (cameraId: string) => cloud.prepareLiveView(cameraId),
   cloudLog: async () => [...cloudLog],
+  getEmulatorStatus: async () => emulator.status(),
+  emulatorEnsureRunning: () => emulator.ensureRunning(),
+  emulatorOpenCamera: (name: string) => emulator.openCamera(name),
+  emulatorCloseCamera: () => emulator.closeCamera(),
+  emulatorStartStream: async () => emulator.startStream(),
+  emulatorStopStream: async () => emulator.stopStream(),
+  emulatorStop: () => emulator.stopEmulator(),
   getAgentInfo: async () => agentInfo(),
   installAgent: (target) => installAgent(target, config.file),
   getAppInfo: async () => ({ version: app.getVersion(), platform: process.platform, configPath: config.file, isPackaged: app.isPackaged, electron: process.versions.electron }),
@@ -630,6 +651,8 @@ app.on('activate', showWindow);
 
 app.whenReady().then(async () => {
   cloud.load();
+  // Warm the camera engine in the background so the first camera click is instant.
+  if (emulator.status().available) setTimeout(() => emulator.ensureRunning().catch(() => undefined), 4000);
   nativeTheme.themeSource = config.settings.theme;
   createWindow();
   createTray();

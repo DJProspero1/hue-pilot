@@ -5,6 +5,7 @@ import { Button, Card, cx, EmptyState, Slider, Toggle, useThrottle } from '../co
 import { lightIcon } from '../lib/icons';
 import { useApp } from '../store';
 import { CloudLiveViewCard } from './CloudLiveView';
+import { EmulatorLiveViewCard } from './EmulatorLiveView';
 import type { MotionEvent } from '../../../shared/ipc-types.ts';
 
 function ago(iso?: string | null): string {
@@ -222,7 +223,7 @@ function VideoNote() {
       <div className="text-sm">
         <div className="font-medium">Live video never reaches the bridge, so it can't be decoded here.</div>
         <div className="text-muted mt-0.5">
-          Hue Secure cameras stream only to Signify's cloud, end-to-end encrypted, and expose no local stream (a full port scan of both cameras on this network found nothing open). Hue Pilot shows what the bridge does expose: motion, ambient light, battery, connectivity and firmware. Live view comes from the Hue cloud, below.
+          Hue Secure cameras stream only to Signify's cloud, end-to-end encrypted, and expose no local stream (a full port scan of both cameras on this network found nothing open). Hue Pilot shows what the bridge does expose: motion, ambient light, battery, connectivity and firmware. The live picture is in the Live view card below.
         </div>
       </div>
     </Card>
@@ -264,6 +265,7 @@ export default function CamerasView() {
           <div className="mt-4">
             <VideoNote />
           </div>
+          <EmulatorLiveViewCard cameras={cameras.map((c) => ({ id: c.id, name: c.name }))} />
           <CloudLiveViewCard cameras={cameras.map((c) => ({ id: c.id, name: c.name }))} />
         </div>
         <div className="min-w-0">

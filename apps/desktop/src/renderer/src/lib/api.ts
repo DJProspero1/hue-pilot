@@ -7,6 +7,8 @@ const EVENT_METHODS: Record<string, string> = {
   onNavigate: 'hue:navigate',
   onSettings: 'hue:settings',
   onMotionEvent: 'hue:motion-event',
+  onEmulatorStatus: 'hue:emu-status',
+  onEmulatorFrame: 'hue:emu-frame',
   onCloudStatus: 'hue:cloud-status',
   onCloudLog: 'hue:cloud-log',
 };
